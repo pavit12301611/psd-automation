@@ -1,0 +1,16 @@
+# Strings: f-strings (interpolation), escapes, plain braces
+
+fn main() {
+    let name = "world"
+    print(f"hello {name}")
+    print(f"2 + 2 = {2 + 2}")
+    print("escapes: x\ty\"z")
+    print(f"{{literal braces}}")
+    print(f"nested: {1 + 2 * 3}")
+    print(f"float in string: {3.5}")
+    print(f"bool in string: {true}")
+    print("plain braces stay literal: {name}")
+    print("json-like: {\"a\": [1, 2], \"b\": {\"c\": true}}")
+    print("concat " + "works " + "too")
+    print(len(""), len("abc"))
+}

@@ -1,0 +1,13 @@
+# Unicode: str length is the UTF-8 BYTE length (documented semantics)
+
+fn main() {
+    print(len("hello"))
+    print(len("héllo"))        # é is 2 bytes -> 6
+    print(len("日本"))         # each CJK char is 3 bytes -> 6
+    print(len("🌍"))           # emoji is 4 bytes
+
+    print("héllo".contains("é"))
+    print("héllo".upper())     # byte-wise ASCII upper; é unchanged
+    print("日本語".contains("本"))
+    print("a-b-c".split("-").len())
+}

@@ -1,0 +1,56 @@
+# Lists, strings, floats and functions
+
+fn sum(xs: [int]) -> int {
+    let total = 0
+    for x in xs {
+        total = total + x
+    }
+    return total
+}
+
+fn describe(name: str, age: int) {
+    print(f"{name} is {age} years old.")
+}
+
+fn main() {
+    # lists
+    let nums = [1, 2, 3, 4, 5]
+    print("sum =", sum(nums))
+    print("len =", len(nums))
+    push(nums, 6)
+    print("after push:", len(nums))
+    print("last =", pop(nums))
+
+    # indexing + assignment
+    nums[0] = 42
+    nums[1] += 10
+    print("nums[0] =", nums[0], "nums[1] =", nums[1])
+
+    # strings
+    let greeting = "Hello"
+    let all = greeting + ", " + "world"
+    print(all)
+    print("equal?", greeting == "Hello", greeting == "Bye")
+    print("len of greeting:", len(greeting))
+
+    # floats and inference
+    let pi = 3.14159
+    let r = 2.0
+    let area = pi * r * r
+    print("area =", area)
+    let mixed = 3 + 4.5     # int promotes to float
+    print("mixed =", mixed)
+
+    # bools and logic
+    let ok = 10 > 5 and not false
+    print("ok =", ok)
+
+    describe("PSD", 1)
+
+    # nested list
+    let grid: [[int]] = [[1, 2], [3, 4]]
+    print("grid[1][0] =", grid[1][0])
+
+    # conversions
+    print("str(42) =", str(42), "int('17') =", int("17"), "float(7) =", float(7))
+}

@@ -1,0 +1,5 @@
+# PSD compiler dependencies (Python 3.10+)
+# Tested with Python 3.11.2 and llvmlite 0.44+ (LLVM 22) on Linux x86-64.
+llvmlite>=0.41
+# Optional: `pip install ziglang` enables `psd apk` cross-compilation
+# of PSD programs to Android binaries without an Android NDK install.

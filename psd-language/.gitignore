@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.o
+*.ll
+bench/fib_psd
+bench/mandel_psd
+bench/loops_psd
+psd-build-*/
+
+# generated AI bundle: contains the full language docs — keep private, never commit
+dist/

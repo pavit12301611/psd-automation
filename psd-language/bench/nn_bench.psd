@@ -1,0 +1,12 @@
+# PSD side of the NN training benchmark: same algorithm, sizes and
+# epochs as bench/nn_compare.py (pure-Python lists, SGD backprop).
+# Run both and compare — compiled PSD vs interpreted Python.
+import "std/nn.psd" as nn
+
+fn main() {
+    let xs = [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]
+    let ys = [[0.0], [1.0], [1.0], [0.0]]
+    let start = time_ms()
+    let trained = nn.train(nn.make_mlp([2, 4, 1], 7), xs, ys, 0.5, 20000)
+    print("psd trained loss:", trained["loss"], "ms:", time_ms() - start)
+}

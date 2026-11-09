@@ -1,0 +1,11 @@
+fn main() {
+    print(int(exp(0.0)), int(pow(2, 10)), int(log(exp(1.0))))
+    print(rand_int(1), random() >= 0.0, int(term_size()["cols"]) > 0)
+    write_file("/tmp/psd_t.ppm", "P3\n2 1\n255\n255 0 0 0 255 0\n")
+    let info = image_info("/tmp/psd_t.ppm")
+    print(info["ok"], int(info["width"]), int(info["height"]))
+    let inv = image_process("/tmp/psd_t.ppm", "/tmp/psd_t.bmp", "invert", 0)
+    print(inv["ok"], str(inv["format"]))
+    let bad = image_process("/tmp/psd_missing.ppm", "/tmp/psd_x.ppm", "invert", 0)
+    print(bad["ok"], str(bad["error"]).contains("cannot read image"))
+}

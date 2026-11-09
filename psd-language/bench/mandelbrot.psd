@@ -1,0 +1,28 @@
+fn mandel(cr: float, ci: float) -> int {
+    let zr = 0.0
+    let zi = 0.0
+    let n = 0
+    while n < 80 {
+        let zr2 = zr * zr
+        let zi2 = zi * zi
+        if zr2 + zi2 > 4.0 {
+            return n
+        }
+        zi = 2.0 * zr * zi + ci
+        zr = zr2 - zi2 + cr
+        n += 1
+    }
+    return 80
+}
+
+fn main() {
+    let sum = 0
+    for y in range(0, 200) {
+        for x in range(0, 200) {
+            let cr = 3.5 * float(x) / 200.0 - 2.5
+            let ci = 2.5 * float(y) / 200.0 - 1.25
+            sum += mandel(cr, ci)
+        }
+    }
+    print(sum)
+}

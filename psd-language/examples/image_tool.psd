@@ -1,0 +1,21 @@
+# Batch image tool: inspect and convert/filter images natively.
+#   psd run examples/image_tool.psd -- in.ppm out.bmp grayscale
+#   psd run examples/image_tool.psd -- photo.bmp small.ppm resize 320
+# Ops (std image engine, PPM P3/P6 + BMP 24-bit): grayscale, invert,
+# brightness <percent>, flip_h, flip_v, blur, resize <new-width>.
+# No Python PIL needed for these basics; PSD compiles to one binary.
+
+fn main() {
+    let a = args()
+    if len(a) < 3 {
+        print("usage: image_tool <in> <out> <op> [arg]")
+        return
+    }
+    print(image_info(a[0]))
+    let arg = 0
+    if len(a) > 3 {
+        arg = int(a[3])
+    }
+    let r = image_process(a[0], a[1], a[2], arg)
+    print(r)
+}

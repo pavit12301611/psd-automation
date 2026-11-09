@@ -1,0 +1,7 @@
+fn f(a: list[int]) -> int {
+    return 1
+}
+
+fn main() {
+    print(f([1]))
+}

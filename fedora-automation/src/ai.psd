@@ -1,0 +1,215 @@
+# psd-auto — AI integration (OpenAI-compatible chat completions).
+#
+# Works with any OpenAI-compatible endpoint: OpenAI, Azure OpenAI,
+# OpenRouter, Groq, Together, or a local model via Ollama/vLLM.
+# Configuration (first match wins):
+#   base url:  $PSD_AI_BASE_URL  >  $OPENAI_BASE_URL  >  config.json ai_base_url
+#              > https://api.openai.com/v1
+#   model:     $PSD_AI_MODEL     >  config.json ai_model          > gpt-4o-mini
+#   api key:   $PSD_AI_API_KEY   >  $OPENAI_API_KEY   (required)
+#
+# Local example (Ollama, no cloud key needed):
+#   export PSD_AI_BASE_URL=http://localhost:11434/v1 PSD_AI_API_KEY=ollama PSD_AI_MODEL=qwen2.5:7b
+#
+# All functions return envelopes {"ok": true, ...} / {"ok": false, "error": ...};
+# nothing here panics on a bad API response.
+
+import "util.psd" as util
+import "spec.psd" as spec
+
+fn ai_base_url() -> str {
+    let v = env("PSD_AI_BASE_URL", "")
+    if len(v) > 0 {
+        return v
+    }
+    v = env("OPENAI_BASE_URL", "")
+    if len(v) > 0 {
+        return v
+    }
+    v = util.config_value("ai_base_url")
+    if len(v) > 0 {
+        return v
+    }
+    return "https://api.openai.com/v1"
+}
+
+fn ai_model() -> str {
+    let v = env("PSD_AI_MODEL", "")
+    if len(v) > 0 {
+        return v
+    }
+    v = util.config_value("ai_model")
+    if len(v) > 0 {
+        return v
+    }
+    return "gpt-4o-mini"
+}
+
+fn ai_api_key() -> str {
+    let v = env("PSD_AI_API_KEY", "")
+    if len(v) > 0 {
+        return v
+    }
+    return env("OPENAI_API_KEY", "")
+}
+
+fn ai_configured() -> bool {
+    return len(ai_api_key()) > 0
+}
+
+fn setup_help() -> str {
+    return "AI is not configured. Set an API key (and optionally a provider):\n" +
+        "  export PSD_AI_API_KEY=sk-...                      # OpenAI (default)\n" +
+        "  export PSD_AI_MODEL=gpt-4o-mini                   # or any chat model\n" +
+        "  export PSD_AI_BASE_URL=https://openrouter.ai/api/v1   # OpenRouter\n" +
+        "  export PSD_AI_BASE_URL=http://localhost:11434/v1 PSD_AI_API_KEY=ollama PSD_AI_MODEL=qwen2.5:7b   # Ollama (local, private)\n" +
+        "or put \"ai_base_url\" / \"ai_model\" in ~/.config/psd-auto/config.json"
+}
+
+fn join_from(parts: [str], from: int, sep: str) -> str {
+    let out = ""
+    for i in range(from, len(parts)) {
+        out = out + parts[i]
+        if i < len(parts) - 1 {
+            out = out + sep
+        }
+    }
+    return out
+}
+
+# Extract the first {...} json object from model output that may include
+# prose or ```json fences. Implemented with split() only.
+fn extract_json(text: str) -> str {
+    let open = text.split("{")
+    if len(open) < 2 {
+        return ""
+    }
+    let body = join_from(open, 1, "{")
+    let close = body.split("}")
+    if len(close) < 2 {
+        return ""
+    }
+    let out = "{"
+    for j in range(len(close) - 1) {
+        out = out + close[j] + "}"
+    }
+    return out
+}
+
+fn chat_completion(system_prompt: str, user_prompt: str, temperature: float, max_tokens: int) -> json {
+    if not ai_configured() {
+        return {"ok": false, "error": setup_help()}
+    }
+    let messages: [json] = []
+    messages.push({"role": "system", "content": system_prompt})
+    messages.push({"role": "user", "content": user_prompt})
+    let payload: json = {"model": ai_model(), "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+    let headers = {"Authorization": "Bearer " + ai_api_key(), "Content-Type": "application/json"}
+    let url = ai_base_url() + "/chat/completions"
+    let r = http_request("POST", url, json_encode(payload), headers)
+    if r["ok"] == false {
+        return {"ok": false, "error": "API request failed (http " + str(r["status"]) + "): " + util.tail_lines(str(r["body"]), 8)}
+    }
+    let body = str(r["body"])
+    let parsed = try_json_parse(body)
+    if parsed["ok"] == false {
+        return {"ok": false, "error": "API returned invalid json: " + util.tail_lines(body, 8)}
+    }
+    let data = parsed["value"]
+    if not data.has("choices") {
+        return {"ok": false, "error": "API response has no choices: " + util.tail_lines(body, 8)}
+    }
+    let choices = data["choices"]
+    if len(choices) == 0 {
+        return {"ok": false, "error": "API response has empty choices"}
+    }
+    let msg = choices[0]["message"]
+    if not msg.has("content") {
+        return {"ok": false, "error": "API message has no content"}
+    }
+    let content = msg["content"]
+    let text = str(content)
+    if text == "null" {
+        return {"ok": false, "error": "API returned null content (model may not support this endpoint or refused the request)"}
+    }
+    if len(text.trim()) == 0 {
+        return {"ok": false, "error": "API returned empty content"}
+    }
+    return {"ok": true, "text": text}
+}
+
+# ---- automation generation ----
+
+fn generation_system_prompt() -> str {
+    return "You are psd-auto's automation authoring engine for a Fedora 45 workstation (dnf5, systemd, SELinux enforcing, firewalld, btrfs). The user describes a maintenance/backup/dev task in natural language; you answer with ONE json object and nothing else.\n" +
+        "Schema:\n" +
+        "{\n" +
+        "  \"name\": \"short-slug\",              // 2-64 chars of [a-z0-9-_]\n" +
+        "  \"description\": \"what it does\",   // <= 300 chars\n" +
+        "  \"category\": \"system|security|cleanup|backup|network|dev|maintenance|custom\",\n" +
+        "  \"timeout\": 600,                     // seconds per step, 1-7200\n" +
+        "  \"requires_sudo\": false,\n" +
+        "  \"steps\": [ ... ]                     // 1-32 steps\n" +
+        "}\n" +
+        "Step shapes (pick ONE per step):\n" +
+        "  {\"argv\": [\"cmd\", \"arg\"], \"sudo\": false, \"allow_failure\": false, \"timeout\": 300, \"desc\": \"...\"}\n" +
+        "  {\"shell\": \"pipeline | head -20\", \"sudo\": false, \"allow_failure\": false, \"timeout\": 60}\n" +
+        "  {\"http_get\": \"https://example.com\", \"expect\": \"optional substring\"}\n" +
+        "Hard rules (violating any means the spec is REJECTED):\n" +
+        "- argv steps preferred (injection-safe). shell only when a pipe is genuinely needed; never '... | sh' or '... | bash'.\n" +
+        "- NEVER delete anything outside well-known caches (e.g. ~/.cache). No mkfs, dd to devices, rm -rf, chmod -R 777, shutdown/reboot.\n" +
+        "- Read-only checks and reports preferred. If unsure a command exists on Fedora 45, set allow_failure true.\n" +
+        "- Use sudo only for steps that truly need root (dnf system changes, journalctl --vacuum-time, etc).\n" +
+        "- Templating available: ${HOME}, ${cwd}, ${date} (YYYY-MM-DD), ${stamp} (YYYYMMDD-HHMMSS), ${param.NAME}, ${config.KEY}.\n" +
+        "- Declare " + "\"params\": {\"name\": \"default\"}" + " when the user may reasonably want a target/path at run time; reference it as ${param.name}.\n" +
+        "Output ONLY the json object. No markdown fences, no commentary."
+}
+
+fn generate_automation(description: str, existing_names: [str]) -> json {
+    let avoid = ""
+    for n in existing_names {
+        avoid = avoid + n + ", "
+    }
+    let user_prompt = "Existing automation names (do not reuse): " + avoid + "\n\nUser request: " + description
+    let r = chat_completion(generation_system_prompt(), user_prompt, 0.2, 1500)
+    if r["ok"] == false {
+        return r
+    }
+    let text = str(r["text"])
+    let json_text = extract_json(text)
+    if len(json_text) == 0 {
+        return {"ok": false, "error": "model did not return a json object:\n" + util.tail_lines(text, 12)}
+    }
+    let parsed = try_json_parse(json_text)
+    if parsed["ok"] == false {
+        return {"ok": false, "error": "model returned invalid json:\n" + util.tail_lines(json_text, 12)}
+    }
+    let specj = parsed["value"]
+    if not specj.has("category") {
+        specj["category"] = "custom"
+    }
+    specj["author"] = "ai"
+    let check = spec.validate_spec(specj)
+    if check["ok"] == false {
+        let err = ""
+        for e in check["errors"] {
+            err = err + "  - " + str(e) + "\n"
+        }
+        return {"ok": false, "error": "generated spec failed validation:\n" + err + "raw spec:\n" + util.tail_lines(json_text, 30)}
+    }
+    return {"ok": true, "spec": specj, "raw": json_encode(specj)}
+}
+
+# ---- explanations and Q&A ----
+
+fn explain_failure(name: str, log_text: str) -> json {
+    let system_prompt = "You are psd-auto's diagnostics assistant for a Fedora 45 workstation. Given an automation's run log, explain in at most 8 short sentences: (1) what failed, (2) the most likely root cause, (3) the concrete fix command(s) the user should run. Be direct; no fluff. If the log is insufficient, say exactly what information is missing."
+    let user_prompt = "Automation '" + name + "' log:\n" + log_text
+    return chat_completion(system_prompt, user_prompt, 0.3, 700)
+}
+
+fn ask(question: str, context: str) -> json {
+    let system_prompt = "You are psd-auto's system assistant for a Fedora 45 workstation (dnf5, systemd, SELinux enforcing, firewalld). Answer concisely with concrete commands. When you suggest a destructive command, say so explicitly and prefer dry-run/read-only verification first."
+    let user_prompt = "Context about this machine:\n" + context + "\n\nQuestion: " + question
+    return chat_completion(system_prompt, user_prompt, 0.3, 900)
+}

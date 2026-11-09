@@ -1,0 +1,9 @@
+import "lib/mod_c.psd" as helper
+
+fn helper() -> int {
+    return 1
+}
+
+fn main() {
+    print(helper.helper())
+}

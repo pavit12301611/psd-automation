@@ -1,0 +1,3 @@
+interop w ok
+interop predict ok
+trainer: trained by python stdlib OLS (swap for any ML runtime)

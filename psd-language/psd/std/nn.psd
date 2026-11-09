@@ -1,0 +1,176 @@
+# Tiny neural networks: real backpropagation training, natively compiled.
+#
+# A network is a json model {"sizes": [2, 4, 1], "weights": [...],
+# "biases": [...]} so it saves/loads with json_encode/write_file and
+# predicts from any program. train() runs full-batch-per-sample SGD with
+# sigmoid activations. This honestly covers small MLPs (tabular data,
+# XOR-style logic, tiny classifiers/regressors) at native speed — it is
+# NOT a deep-learning framework: no GPU, no autodiff, no convolutions.
+
+import "std/numeric.psd" as num
+
+# --- deterministic RNG (LCG) -------------------------------------------
+fn rng_new(seed: int) -> [int] {
+    let s = seed % 2147483648
+    if s <= 0 {
+        s = s + 2147483647
+    }
+    return [s]
+}
+
+fn rng_float(state: [int]) -> float {
+    state[0] = (state[0] * 1103515245 + 12345) % 2147483648
+    return float(state[0]) / 2147483648.0
+}
+
+fn mat_to_json(m: [[float]]) -> json {
+    let rows: json = []
+    for i in range(len(m)) {
+        let row: json = []
+        for j in range(len(m[i])) {
+            row.push(m[i][j])
+        }
+        rows.push(row)
+    }
+    return rows
+}
+
+fn json_to_mat(v: json) -> [[float]] {
+    let out: [[float]] = []
+    for i in range(len(v)) {
+        let row: [float] = []
+        for j in range(len(v[i])) {
+            row.push(float(v[i][j]))
+        }
+        out.push(row)
+    }
+    return out
+}
+
+fn vec_to_json(v: [float]) -> json {
+    let out: json = []
+    for i in range(len(v)) {
+        out.push(v[i])
+    }
+    return out
+}
+
+# make_mlp([2, 4, 1], seed) -> model json with small random weights.
+fn make_mlp(sizes: [int], seed: int) -> json {
+    let state = rng_new(seed)
+    let weights: json = []
+    let biases: json = []
+    for l in range(len(sizes) - 1) {
+        let w = num.zeros(sizes[l + 1], sizes[l])
+        let brow: [float] = []
+        for i in range(sizes[l + 1]) {
+            brow.push(0.0)
+            for j in range(sizes[l]) {
+                w[i][j] = (rng_float(state) - 0.5) * 2.0
+            }
+        }
+        weights.push(mat_to_json(w))
+        biases.push(vec_to_json(brow))
+    }
+    return {"sizes": sizes, "weights": weights, "biases": biases}
+}
+
+fn forward_acts(m: json, x: [float]) -> [[float]] {
+    let acts: [[float]] = [x]
+    let a = x
+    for l in range(len(m["weights"])) {
+        let w = json_to_mat(m["weights"][l])
+        let b: [float] = []
+        for i in range(len(m["biases"][l])) {
+            b.push(float(m["biases"][l][i]))
+        }
+        a = num.sigmoid_vec(num.add_vec(num.matvec(w, a), b))
+        acts.push(a)
+    }
+    return acts
+}
+
+# predict(model, x) -> output vector (sigmoid outputs in (0, 1)).
+fn predict(m: json, x: [float]) -> [float] {
+    let acts = forward_acts(m, x)
+    return acts[len(acts) - 1]
+}
+
+# Mean squared error of a model over a dataset.
+fn loss(m: json, xs: [[float]], ys: [[float]]) -> float {
+    let total = 0.0
+    for s in range(len(xs)) {
+        let out = predict(m, xs[s])
+        for j in range(len(out)) {
+            let d = out[j] - ys[s][j]
+            total = total + d * d
+        }
+    }
+    return total / float(len(xs))
+}
+
+# train(model, xs, ys, lr, epochs) -> json {"ok": true, "loss": f,
+# "weights": ..., "biases": ...}: merge weights/biases into the model
+# (or build a fresh model json from the result) to predict.
+fn train(m: json, xs: [[float]], ys: [[float]], lr: float, epochs: int) -> json {
+    let layers = len(m["weights"])
+    let weights: [[[float]]] = []
+    let biases: [[float]] = []
+    for l in range(layers) {
+        weights.push(json_to_mat(m["weights"][l]))
+        let b: [float] = []
+        for i in range(len(m["biases"][l])) {
+            b.push(float(m["biases"][l][i]))
+        }
+        biases.push(b)
+    }
+    let model = m
+    for epoch in range(epochs) {
+        for s in range(len(xs)) {
+            let acts = forward_acts(model, xs[s])
+            # deltas per layer, computed back-to-front
+            let deltas: [[float]] = []
+            let blank: [float] = []
+            for l in range(layers) {
+                deltas.push(blank)
+            }
+            let out = acts[layers]
+            let dlast: [float] = []
+            for j in range(len(out)) {
+                dlast.push((out[j] - ys[s][j]) * out[j] * (1.0 - out[j]))
+            }
+            deltas[layers - 1] = dlast
+            let l = layers - 2
+            while l >= 0 {
+                let dl: [float] = []
+                for i in range(len(weights[l + 1][0])) {
+                    let back = 0.0
+                    for k in range(len(deltas[l + 1])) {
+                        back = back + weights[l + 1][k][i] * deltas[l + 1][k]
+                    }
+                    let a = acts[l + 1][i]
+                    dl.push(back * a * (1.0 - a))
+                }
+                deltas[l] = dl
+                l = l - 1
+            }
+            for li in range(layers) {
+                for i in range(len(weights[li])) {
+                    for j in range(len(weights[li][i])) {
+                        weights[li][i][j] = weights[li][i][j] - lr * deltas[li][i] * acts[li][j]
+                    }
+                    biases[li][i] = biases[li][i] - lr * deltas[li][i]
+                }
+            }
+            # refresh the working model for the next sample
+            let wj: json = []
+            let bj: json = []
+            for li in range(layers) {
+                wj.push(mat_to_json(weights[li]))
+                bj.push(vec_to_json(biases[li]))
+            }
+            model = {"sizes": m["sizes"], "weights": wj, "biases": bj}
+        }
+    }
+    return {"ok": true, "loss": loss(model, xs, ys), "weights": model["weights"], "biases": model["biases"]}
+}

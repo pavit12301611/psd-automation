@@ -1,0 +1,15 @@
+# String inequality must be the exact complement of equality (regression:
+# codegen emitted `icmp ne` for both == and != on strings)
+
+fn main() {
+    let a = "user"
+    print(str(a == "user"))
+    print(str(a != "user"))
+    print(str(a == "builtin"))
+    print(str(a != "builtin"))
+    print(str("hello" != "hello"))
+    print(str("hello" != "world"))
+    let b = ""
+    print(str(b != ""))
+    print(str(b == ""))
+}

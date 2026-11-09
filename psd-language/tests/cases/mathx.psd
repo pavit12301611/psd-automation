@@ -1,0 +1,33 @@
+# v0.4 float math + time/random/console/dirs/try_run
+import "std/math.psd" as math
+
+fn main() {
+    print(math.approx(exp(0.0), 1.0, 0.0001))
+    print(math.approx(log(exp(2.0)), 2.0, 0.0001))
+    print(math.approx(pow(2.0, 10.0), 1024.0, 0.001))
+    print(math.approx(pow(9.0, 0.5), 3.0, 0.0001))
+
+    let t0 = time_ms()
+    sleep_ms(15)
+    print(time_ms() - t0 >= 5)
+    print(random() >= 0.0 and random() < 1.0)
+    print(rand_int(1) == 0)
+    let r = rand_int(10)
+    print(r >= 0 and r < 10)
+
+    make_dir("/tmp/psd_mathx_dir")
+    print(exists("/tmp/psd_mathx_dir"))
+    let dm = try_make_dir("/tmp/psd_mathx_dir")
+    print(dm["ok"])
+    print(len(cwd()) > 0)
+
+    let ok_run = try_run(["true"])
+    print(ok_run["ok"], int(ok_run["code"]))
+    let bad_run = try_run(["false"])
+    print(bad_run["ok"], int(bad_run["code"]))
+
+    let f = try_float("2.5")
+    print(f["ok"], float(f["value"]))
+    let bf = try_float("2x")
+    print(bf["ok"])
+}

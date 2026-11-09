@@ -1,0 +1,66 @@
+import "std/ml.psd" as ml
+import "std/math.psd" as math
+
+# AI/ML interop pattern: PSD orchestrates an external trainer over json files.
+#
+# 1. PSD writes the dataset as json (safe: plain data, no code generation).
+# 2. `try_capture([...], secs)` runs the trainer argv-based (no shell, so
+#    untrusted values are safe), with a timeout: on timeout code == -1.
+# 3. PSD validates the returned model before predicting and reports
+#    useful errors at every step.
+#
+# The same seam accepts scikit-learn, PyTorch, R, or a remote job queue —
+# only the trainer script changes. PSD itself has no tensors, no GPU, and no
+# autodiff; std/ml is for small CPU-side scalar models.
+#
+# Run from the repository root (script paths are relative).
+
+fn main() {
+    let data = "[[1, 3], [2, 5], [3, 7], [4, 9], [5, 11]]"
+    let data_path = "/tmp/psd_interop_data.json"
+    let model_path = "/tmp/psd_interop_model.json"
+
+    # 1. write the dataset
+    let saved = try_write_file(data_path, data)
+    if saved["ok"] {
+    } else {
+        print("interop: cannot write dataset: " + str(saved["error"]))
+        exit(1)
+    }
+
+    # 2. run the trainer (argv, no shell; 30s timeout; failure is data)
+    let ran = try_capture(["python3", "examples/lib/train_ols.py",
+                           data_path, model_path], 30)
+    if ran["ok"] {
+    } else {
+        print("interop: trainer failed: " + str(ran["error"]))
+        print("interop: exit code = " + str(ran["code"]))
+        exit(1)
+    }
+
+    # 3. load and validate the returned model
+    let m = ml.load(model_path)
+    if m["ok"] {
+    } else {
+        print("interop: cannot load model: " + str(m["error"]))
+        exit(1)
+    }
+    let model = m["value"]
+    if model.has("w") && model.has("b") {
+    } else {
+        print("interop: invalid model: missing w/b")
+        exit(1)
+    }
+    if math.approx(float(model["w"]), 2.0, 0.001) {
+        print("interop w ok")
+    } else {
+        print("interop: w = " + str(model["w"]) + " (expected ~2)")
+    }
+    if math.approx(ml.predict(model, 6.0), 13.0, 0.01) {
+        print("interop predict ok")
+    } else {
+        print("interop: predict(6) = " + str(ml.predict(model, 6.0)) +
+              " (expected ~13)")
+    }
+    print("trainer: " + str(model["note"]))
+}

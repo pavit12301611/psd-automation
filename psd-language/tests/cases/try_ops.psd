@@ -1,0 +1,83 @@
+fn main() {
+    # recoverable errors: every failure is data, not a crash
+    let r1 = try_read_file("/definitely_missing_psd_test")
+    if r1["ok"] {
+        print("BAD read")
+    } else {
+        print("read err ok")
+    }
+
+    let r2 = try_write_file("/tmp/psd_try_ops.txt", "hello")
+    if r2["ok"] {
+        let r3 = try_read_file("/tmp/psd_try_ops.txt")
+        if str(r3["value"]) == "hello" {
+            print("write/read ok")
+        }
+    } else {
+        print("BAD write")
+    }
+
+    let r4 = try_int("42")
+    if str(r4["value"]) == "42" {
+        print("int ok")
+    }
+    let r5 = try_int("4x")
+    if r5["ok"] {
+        print("BAD int")
+    } else {
+        print("bad int ok")
+    }
+
+    let r6 = try_json_parse("{\"a\": 1}")
+    if r6["ok"] {
+        print("json ok")
+    } else {
+        print("BAD json")
+    }
+    let r7 = try_json_parse("nope")
+    if r7["ok"] {
+        print("BAD bad json")
+    } else {
+        print("bad json ok")
+    }
+
+    let r8 = try_capture(["echo", "hi"])
+    if str(r8["value"]) == "hi" {
+        print("capture ok")
+    }
+    let r9 = try_capture(["false"])
+    if r9["ok"] {
+        print("BAD exit code")
+    } else {
+        print("exit code ok")
+    }
+
+    let r10 = try_capture(["sleep", "2"], 1)
+    if r10["ok"] {
+        print("BAD timeout")
+    } else {
+        print("timeout ok")
+    }
+
+    let r11 = try_http_get("http://127.0.0.1:1/")
+    if r11["ok"] {
+        print("BAD http")
+    } else {
+        print("http err ok")
+    }
+
+    let r12 = try_write_file("/no_such_dir_psd/x", "y")
+    if r12["ok"] {
+        print("BAD write err")
+    } else {
+        print("write err ok")
+    }
+
+    # html/url helpers + sqrt
+    print(html_escape("a<b>&'c'"))     # a&lt;b&gt;&amp;&#39;c&#39;
+    print(url_encode("a b/c"))          # a%20b%2Fc
+    print(url_decode("a+b%2Fc"))        # a b/c
+    if sqrt(9.0) == 3.0 {
+        print("sqrt ok")
+    }
+}

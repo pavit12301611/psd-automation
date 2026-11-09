@@ -1,0 +1,35 @@
+# High-traffic starter: preforked concurrent server + streamed files.
+#   PSD_PORT=8080 psd run examples/server_pool.psd
+# http_listen_pool forks N worker processes on one socket (OS load-
+# balances). Each worker runs this same accept loop; state is per-
+# worker, so share data via files/json/env like any process pool.
+# Stop with Ctrl-C. Honest limits: HTTP/1.1 only, no TLS (put Caddy/
+# nginx in front for HTTPS), no WebSockets yet.
+
+fn main() {
+    let port = http_listen_pool(int(env("PSD_PORT", "8080")), "", 4)
+    if port <= 0 {
+        print("failed to bind")
+        return
+    }
+    print("serving pool on port", port)
+    let limit = int(env("PSD_SERVE_COUNT", "0"))
+    let served = 0
+    while true {
+        let req = http_accept()
+        let path = str(req["path"])
+        if path == "/go" {
+            http_redirect("/")
+        } else {
+            if path == "/logo.ppm" {
+                http_reply_file("/tmp/logo.ppm", "image/x-portable-pixmap")
+            } else {
+                http_reply(200, "text/html", "<h1>PSD pool</h1><p>worker sees your headers:</p><pre>" + json_encode(req["headers"]) + "</pre>")
+            }
+        }
+        served = served + 1
+        if limit > 0 and served >= limit {
+            break
+        }
+    }
+}

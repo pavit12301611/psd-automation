@@ -1,0 +1,40 @@
+# JSON: parsing, building, indexing, converting
+
+fn main() {
+    let data = json_parse("{\"name\": \"ada\", \"age\": 36, \"tags\": [\"math\", \"code\"], \"meta\": {\"ok\": true}}")
+    print(data["name"])
+    print(int(data["age"]) + 1)
+    print(data["tags"][0], data["tags"][1])
+    print(data["meta"]["ok"])
+    print(data.has("name"), data.has("missing"))
+    print(len(data), data["tags"].len())
+
+    for t in data["tags"] {
+        print(f"tag: {t}")
+    }
+
+    # building json from mixed literals
+    let payload = {"model": "psd-1", "temperature": 0.7, "stream": false, "n": 3}
+    print(json_encode(payload))
+
+    let arr = [1, "two", 3.0, true, [4]]
+    print(json_encode(arr))
+
+    # mutations
+    payload["n"] = 5
+    payload["extra"] = "added"
+    print(int(payload["n"]), payload["extra"])
+
+    let arr2: json = []
+    arr2.push(1)
+    arr2.push("x")
+    print(json_encode(arr2))
+
+    # keys iteration
+    let obj = json_parse("{\"b\": 2, \"a\": 1}")
+    for k in obj.keys() {
+        print(k, int(obj[k]))
+    }
+
+    print(str(data["name"]), data["name"])
+}

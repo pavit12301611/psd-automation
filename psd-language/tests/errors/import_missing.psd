@@ -1,0 +1,4 @@
+import "no_such_file.psd" as x
+
+fn main() {
+}

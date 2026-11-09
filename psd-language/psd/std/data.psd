@@ -1,0 +1,147 @@
+# Datasets in PSD: CSV in, json / JSONL out.
+#
+# PSD's training story is deliberately file-based: datasets and models are
+# json values on disk, so the same files feed PSD's tiny trainers
+# (std/ml.psd), an external runtime (PyTorch / scikit-learn via run()), or
+# a fine-tuning API (one json object per line = JSONL).
+#
+# CSV dialect (honest limits): comma-separated, no quoted commas/newlines,
+# first row may be a header (skip_header). Good for exported tabular data.
+
+# Raw CSV -> json rows of [str]. Empty trailing line is ignored.
+fn parse_csv(text: str) -> json {
+    let rows: json = []
+    let lines = text.trim().split("\n")
+    for i in range(len(lines)) {
+        if len(lines[i].trim()) == 0 {
+            continue
+        }
+        let row: json = []
+        let cells = lines[i].split(",")
+        for j in range(len(cells)) {
+            row.push(cells[j].trim())
+        }
+        rows.push(row)
+    }
+    return rows
+}
+
+# CSV text -> {"ok": true, "value": [[float]...]} or an error envelope.
+# Set skip_header when the first row holds column names.
+fn csv_numbers(text: str, skip_header: bool) -> json {
+    let rows = parse_csv(text)
+    let out: json = []
+    let start = 0
+    if skip_header {
+        start = 1
+    }
+    for i in range(start, len(rows)) {
+        let row: json = []
+        for j in range(len(rows[i])) {
+            let cell = try_float(str(rows[i][j]))
+            if cell["ok"] {
+                row.push(float(cell["value"]))
+            } else {
+                return {"ok": false, "error": "csv_numbers: not a number: " + str(rows[i][j])}
+            }
+        }
+        out.push(row)
+    }
+    return {"ok": true, "value": out}
+}
+
+# Load a numeric CSV file from disk (same envelope as csv_numbers).
+fn load_numbers(path: str, skip_header: bool) -> json {
+    let r = try_read_file(path)
+    if r["ok"] {
+        return csv_numbers(str(r["value"]), skip_header)
+    }
+    return {"ok": false, "error": str(r["error"])}
+}
+
+# A json matrix (from csv_numbers) as a typed [[float]] for std/ml.
+fn to_matrix(rows: json) -> [[float]] {
+    let out: [[float]] = []
+    for i in range(len(rows)) {
+        let row: [float] = []
+        for j in range(len(rows[i])) {
+            row.push(float(rows[i][j]))
+        }
+        out.push(row)
+    }
+    return out
+}
+
+# One column of a numeric matrix as [float] (e.g. the label column).
+fn column(rows: [[float]], j: int) -> [float] {
+    let out: [float] = []
+    for i in range(len(rows)) {
+        out.push(rows[i][j])
+    }
+    return out
+}
+
+# All columns except j (e.g. features when the last column is the label).
+fn features(rows: [[float]], skip: int) -> [[float]] {
+    let out: [[float]] = []
+    for i in range(len(rows)) {
+        let row: [float] = []
+        for j in range(len(rows[i])) {
+            if j != skip {
+                row.push(rows[i][j])
+            }
+        }
+        out.push(row)
+    }
+    return out
+}
+
+# ---- fine-tuning dataset builders (JSONL) --------------------------------
+# One example per line is the interchange format fine-tuning APIs accept.
+# Build examples with the helpers below, then save_jsonl() the list.
+
+# Chat-format example: {"messages": [{system}, {user}, {assistant}]}
+fn chat_example(system: str, user: str, assistant: str) -> json {
+    let msgs: json = []
+    msgs.push({"role": "system", "content": system})
+    msgs.push({"role": "user", "content": user})
+    msgs.push({"role": "assistant", "content": assistant})
+    return {"messages": msgs}
+}
+
+# Instruction-format example: {"instruction": ..., "input": "", "output": ...}
+fn instruction_example(instruction: str, output: str) -> json {
+    return {"instruction": instruction, "input": "", "output": output}
+}
+
+# Write [json] examples as JSONL. Returns the usual try_* style envelope.
+fn save_jsonl(path: str, rows: [json]) -> json {
+    let text = ""
+    for i in range(len(rows)) {
+        text = text + json_encode(rows[i]) + "\n"
+    }
+    return try_write_file(path, text)
+}
+
+# Read a JSONL file back into [json] (blank lines skipped). Envelope:
+# {"ok": true, "value": [json...]} / {"ok": false, "error": ...}
+fn load_jsonl(path: str) -> json {
+    let r = try_read_file(path)
+    if r["ok"] {
+        let out: [json] = []
+        let lines = str(r["value"]).split("\n")
+        for i in range(len(lines)) {
+            if len(lines[i].trim()) == 0 {
+                continue
+            }
+            let one = try_json_parse(lines[i])
+            if one["ok"] {
+                out.push(one["value"])
+            } else {
+                return {"ok": false, "error": "load_jsonl: invalid json on a line"}
+            }
+        }
+        return {"ok": true, "value": out}
+    }
+    return {"ok": false, "error": str(r["error"])}
+}

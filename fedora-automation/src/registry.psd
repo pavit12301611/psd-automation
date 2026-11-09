@@ -1,0 +1,95 @@
+# psd-auto — automation registry.
+#
+# Built-in automations ship as json specs in the install's automations/
+# directory. User automations (added via CLI, web UI, or AI) live in
+# ~/.config/psd-auto/automations/. User specs may shadow built-ins of the
+# same name; loading problems are reported as data, never crashes.
+
+import "util.psd" as util
+
+fn load_dir(dir: str, source: str) -> json {
+    let specs: [json] = []
+    let warnings: [str] = []
+    if not exists(dir) {
+        return {"specs": specs, "warnings": warnings}
+    }
+    let files = list_dir(dir)
+    for f in files {
+        if not f.ends_with(".json") {
+            continue
+        }
+        let path = dir + "/" + f
+        let r = try_read_file(path)
+        if r["ok"] == false {
+            warnings.push("cannot read " + path)
+            continue
+        }
+        let parsed = try_json_parse(str(r["value"]))
+        if parsed["ok"] == false {
+            warnings.push(path + ": invalid json")
+            continue
+        }
+        let j = parsed["value"]
+        j["_source"] = source
+        j["_path"] = path
+        if not j.has("author") {
+            if source == "builtin" {
+                j["author"] = "builtin"
+            } else {
+                j["author"] = "user"
+            }
+        }
+        specs.push(j)
+    }
+    return {"specs": specs, "warnings": warnings}
+}
+
+# Load everything, deterministic: builtins in directory order, then user
+# specs (shadowing a builtin replaces it in place; brand-new user specs are
+# appended). Native automations are added by the caller.
+fn load_all() -> json {
+    let builtin = load_dir(util.builtin_dir(), "builtin")
+    let user = load_dir(util.user_automations_dir(), "user")
+    let warnings: [str] = []
+    for w in builtin["warnings"] {
+        warnings.push(str(w))
+    }
+    for w in user["warnings"] {
+        warnings.push(str(w))
+    }
+    let out: [json] = []
+    for s in builtin["specs"] {
+        out.push(s)
+    }
+    for s in user["specs"] {
+        let name = str(s["name"])
+        let replaced = false
+        for i in range(len(out)) {
+            if str(out[i]["name"]) == name {
+                out[i] = s
+                replaced = true
+                break
+            }
+        }
+        if not replaced {
+            out.push(s)
+        }
+    }
+    return {"specs": out, "warnings": warnings}
+}
+
+fn find(specs: [json], name: str) -> json {
+    for s in specs {
+        if str(s["name"]) == name {
+            return s
+        }
+    }
+    return {"__missing__": true}
+}
+
+fn is_native(s: json) -> bool {
+    if s.has("_native") {
+        return s["_native"] == true
+    }
+    return false
+}

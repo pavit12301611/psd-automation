@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "psd": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["-m", "psd", "mcp"],
+      "env": {
+        "PYTHONPATH": "/ABSOLUTE/PATH/TO/psd-language",
+        "PSD_MCP_ALLOW_RUN": "1"
+      }
+    }
+  }
+}

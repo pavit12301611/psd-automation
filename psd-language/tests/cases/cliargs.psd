@@ -1,0 +1,6 @@
+fn main() {
+    print(args().len())
+    for a in args() {
+        print(f"arg: {a}")
+    }
+}

@@ -1,0 +1,19 @@
+fn main() {
+    let a = 1 +
+    2 +
+    3
+    print(a)
+    let s = "x" +
+    "y"
+    print(s)
+    let b = 10
+    b =
+    b * 2
+    print(b)
+    print(2 +
+        3 * 4)
+    if a == 6 and
+    b == 20 {
+        print("multiline ok")
+    }
+}

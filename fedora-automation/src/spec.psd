@@ -1,0 +1,295 @@
+# psd-auto — automation spec validation.
+#
+# A spec is a json object:
+#   {
+#     "name": "my-task",             # 2-64 chars: [a-z0-9-_], no edge -_
+#     "description": "...",          # required, <= 300 chars
+#     "category": "system",          # one of CATEGORIES (default custom)
+#     "timeout": 600,                # default per-step timeout seconds
+#     "author": "user",              # builtin | user | ai
+#     "params": {"k": "default"},    # optional string params, ${param.k}
+#     "requires_sudo": false,        # informational badge
+#     "steps": [ {step}, ... ]       # 1-32 steps
+#   }
+#
+# Step shapes:
+#   {"argv": ["cmd", "arg", ...], "sudo": bool, "timeout": secs,
+#    "allow_failure": bool, "desc": "..."}
+#   {"shell": "cmd line", ...same opts}
+#   {"http_get": "https://...", "expect": "substring", ...}
+#
+# Validation is the safety gate for both the CLI and AI-generated specs.
+# Anything that looks destructive is rejected outright — there is no
+# override flag. If a power user wants a destructive cleanup, they can
+# write it themselves; the tool will not author it.
+
+fn categories() -> [str] {
+    return ["system", "security", "cleanup", "backup", "network", "dev", "maintenance", "custom"]
+}
+
+fn valid_category(c: str) -> bool {
+    for cat in categories() {
+        if cat == c {
+            return true
+        }
+    }
+    return false
+}
+
+# ---------------------------------------------------- name rules ----
+
+fn strip_allowed(s: str) -> str {
+    let out = s.replace("-", "").replace("_", "")
+    out = out.replace("0", "").replace("1", "").replace("2", "").replace("3", "").replace("4", "")
+    out = out.replace("5", "").replace("6", "").replace("7", "").replace("8", "").replace("9", "")
+    out = out.replace("a", "").replace("b", "").replace("c", "").replace("d", "").replace("e", "")
+    out = out.replace("f", "").replace("g", "").replace("h", "").replace("i", "").replace("j", "")
+    out = out.replace("k", "").replace("l", "").replace("m", "").replace("n", "").replace("o", "")
+    out = out.replace("p", "").replace("q", "").replace("r", "").replace("s", "").replace("t", "")
+    out = out.replace("u", "").replace("v", "").replace("w", "").replace("x", "").replace("y", "")
+    out = out.replace("z", "")
+    return out
+}
+
+fn valid_name(s: str) -> bool {
+    let n = len(s)
+    if n < 2 or n > 64 {
+        return false
+    }
+    if s.starts_with("-") or s.ends_with("-") or s.starts_with("_") or s.ends_with("_") {
+        return false
+    }
+    return len(strip_allowed(s)) == 0
+}
+
+# -------------------------------------------------- danger scan ----
+
+# Returns the reason a command line is rejected, or "" when it looks safe.
+# Fed with the lowercased command text (joined argv, or the shell line).
+fn danger_reason(text: str) -> str {
+    let t = text.lower()
+    let hard_blocks = [
+        "mkfs", "wipefs", ":(){", "| sh", "| bash", "|sh", "|bash",
+        "dd of=/dev", "of=/dev/", "> /dev/", ">> /dev/",
+        "chmod -r 777 /", "chown -r", "rm -rf /", "rm -rf ~", "rm -rf *",
+        "rm -rf .", "rm --recursive --force /", "mv / ", ">/etc/shadow",
+        "init 0", "init 6", "systemctl poweroff", "systemctl reboot",
+        "systemctl halt", "systemctl kexec"
+    ]
+    for b in hard_blocks {
+        if t.contains(b) {
+            return "contains forbidden pattern: " + b
+        }
+    }
+    # dangerous as a leading command (but ok deeper in the line, e.g. inside
+    # a log message or path)
+    let heads = ["shutdown", "reboot", "poweroff", "halt", "kexec", "init"]
+    let first = t.trim()
+    for h in heads {
+        if first == h or first.starts_with(h + " ") {
+            return "leading command '" + h + "' is not allowed in an automation"
+        }
+    }
+    return ""
+}
+
+# sudo-prefixed commands are allowed (they still need the user's password /
+# a configured ruleset), but we surface them in the preview.
+fn argv_danger(argv: [str]) -> str {
+    let joined = ""
+    for a in argv {
+        joined = joined + a + " "
+    }
+    return danger_reason(joined)
+}
+
+# ---------------------------------------------------- validator ----
+
+fn validate_step(step: json, index: int) -> [str] {
+    let errors: [str] = []
+    let label = "step " + str(index + 1) + ": "
+    let has_argv = step.has("argv")
+    let has_shell = step.has("shell")
+    let has_http = step.has("http_get")
+    let kinds = 0
+    if has_argv {
+        kinds = kinds + 1
+    }
+    if has_shell {
+        kinds = kinds + 1
+    }
+    if has_http {
+        kinds = kinds + 1
+    }
+    if kinds == 0 {
+        return [label + "needs one of: argv, shell, http_get"]
+    }
+    if kinds > 1 {
+        return [label + "has multiple of argv/shell/http_get — pick exactly one"]
+    }
+    if has_argv {
+        let argv = step["argv"]
+        let n = len(argv)
+        if n < 1 {
+            errors.push(label + "argv must be a non-empty array of strings")
+        } else {
+            let parts: [str] = []
+            for i in range(n) {
+                let piece = str(argv[i])
+                if len(piece) == 0 {
+                    errors.push(label + "argv contains an empty item")
+                } else {
+                    if len(piece) > 500 {
+                        errors.push(label + "argv item is too long (>500 chars)")
+                    }
+                    parts.push(piece)
+                }
+            }
+            if len(parts) > 0 {
+                let reason = argv_danger(parts)
+                if len(reason) > 0 {
+                    errors.push(label + reason)
+                }
+                let head = parts[0].lower()
+                let blocked_heads = ["shutdown", "reboot", "poweroff", "halt"]
+                for b in blocked_heads {
+                    if head == b {
+                        errors.push(label + "command '" + b + "' is not allowed in an automation")
+                    }
+                }
+            }
+        }
+    }
+    if has_shell {
+        let cmd = str(step["shell"])
+        if len(cmd) == 0 {
+            errors.push(label + "shell must be a non-empty string")
+        } else {
+            if len(cmd) > 4000 {
+                errors.push(label + "shell line is too long (>4000 chars)")
+            }
+            let reason = danger_reason(cmd)
+            if len(reason) > 0 {
+                errors.push(label + reason)
+            }
+        }
+    }
+    if has_http {
+        let url = str(step["http_get"])
+        if not (url.starts_with("http://") or url.starts_with("https://")) {
+            errors.push(label + "http_get must start with http:// or https://")
+        }
+        if len(url) > 1000 {
+            errors.push(label + "http_get url is too long")
+        }
+    }
+    if step.has("timeout") {
+        let t = jget_int_safe(step["timeout"])
+        if t < 1 or t > 7200 {
+            errors.push(label + "timeout must be between 1 and 7200 seconds")
+        }
+    }
+    return errors
+}
+
+fn jget_int_safe(v: json) -> int {
+    let r = try_int(str(v))
+    if r["ok"] {
+        return int(r["value"])
+    }
+    return -1
+}
+
+# Top-level validation. Returns {"ok": bool, "errors": [str]}.
+fn validate_spec(spec: json) -> json {
+    let errors: [str] = []
+    if not spec.has("name") {
+        errors.push("missing 'name'")
+    } else {
+        let nm = str(spec["name"])
+        if not valid_name(nm) {
+            errors.push("'name' must be 2-64 chars of [a-z0-9-_] and not start/end with - or _")
+        }
+    }
+    if not spec.has("description") {
+        errors.push("missing 'description'")
+    } else {
+        let d = str(spec["description"]).trim()
+        if len(d) == 0 {
+            errors.push("'description' must not be empty")
+        } else {
+            if len(d) > 300 {
+                errors.push("'description' is too long (>300 chars)")
+            }
+        }
+    }
+    if spec.has("category") {
+        if not valid_category(str(spec["category"])) {
+            errors.push("'category' must be one of: system, security, cleanup, backup, network, dev, maintenance, custom")
+        }
+    }
+    if spec.has("timeout") {
+        let t = jget_int_safe(spec["timeout"])
+        if t < 1 or t > 7200 {
+            errors.push("'timeout' must be between 1 and 7200 seconds")
+        }
+    }
+    if spec.has("params") {
+        let p = spec["params"]
+        if len(p.keys()) > 16 {
+            errors.push("'params' supports at most 16 entries")
+        }
+        for k in p.keys() {
+            if not valid_name(k) {
+                errors.push("param name '" + k + "' is invalid (use [a-z0-9-_])")
+            }
+        }
+    }
+    if not spec.has("steps") {
+        errors.push("missing 'steps'")
+    } else {
+        let steps = spec["steps"]
+        let n = len(steps)
+        if n < 1 {
+            errors.push("'steps' must contain at least one step")
+        } else {
+            if n > 32 {
+                errors.push("'steps' supports at most 32 steps")
+            } else {
+                for i in range(n) {
+                    let step_errors = validate_step(steps[i], i)
+                    for e in step_errors {
+                        errors.push(e)
+                    }
+                }
+            }
+        }
+    }
+    return {"ok": len(errors) == 0, "errors": errors}
+}
+
+# Human-readable one-line safety summary of a spec (used in previews).
+fn spec_summary(spec: json) -> str {
+    let sudo_steps = 0
+    let shell_steps = 0
+    let steps = spec["steps"]
+    for i in range(len(steps)) {
+        let s = steps[i]
+        if s.has("sudo") {
+            if s["sudo"] == true {
+                sudo_steps = sudo_steps + 1
+            }
+        }
+        if s.has("shell") {
+            shell_steps = shell_steps + 1
+        }
+    }
+    let out = str(len(steps)) + " step(s)"
+    if sudo_steps > 0 {
+        out = out + ", " + str(sudo_steps) + " with sudo"
+    }
+    if shell_steps > 0 {
+        out = out + ", " + str(shell_steps) + " raw shell"
+    }
+    return out
+}

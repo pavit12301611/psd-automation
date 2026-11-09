@@ -1,0 +1,27 @@
+import "std/ml.psd" as ml
+import "std/math.psd" as math
+
+# Tiny model demo: fit y = 2x + 1 on small data, save params, run inference.
+# See examples/ml_interop.psd for the pattern that plugs in a real ML runtime.
+
+fn main() {
+    let xs = [1.0, 2.0, 3.0, 4.0, 5.0]
+    let ys = [3.0, 5.0, 7.0, 9.0, 11.0]
+
+    let m = ml.fit(xs, ys)
+    if m["ok"] {
+        let w = str(m["w"])
+        let b = str(m["b"])
+        let loss = str(m["loss"])
+        let pred = str(ml.predict(m, 6.0))
+        print("w = " + w)
+        print("b = " + b)
+        print("loss = " + loss)
+        print("predict(6) = " + pred)
+
+        let saved = ml.save("/tmp/psd_tiny_model.json", m)
+        if saved["ok"] {
+            print("model saved to /tmp/psd_tiny_model.json")
+        }
+    }
+}

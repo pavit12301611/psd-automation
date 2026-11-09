@@ -1,0 +1,156 @@
+# psd-auto — text parsing helpers for authoring automations.
+#
+# Shared by the CLI wizard, the web form and the AI importer: the line
+# format is the same everywhere.
+#
+# Line format (one step per line):
+#   argv: cmd arg1 arg2
+#   shell: pipeline with pipes
+#   http: https://url = expected-substring
+# Suffixes anywhere at end of line: [sudo] (root), [ok] (tolerate failure)
+# Lines starting with # are comments.
+
+fn join_from2(parts: [str], from: int, sep: str) -> str {
+    let out = ""
+    for i in range(from, len(parts)) {
+        out = out + parts[i]
+        if i < len(parts) - 1 {
+            out = out + sep
+        }
+    }
+    return out
+}
+
+fn join_all(parts: [str], sep: str) -> str {
+    return join_from2(parts, 0, sep)
+}
+
+# Remove a known prefix exactly once (split-based, no substring builtin).
+fn strip_prefix(s: str, prefix: str) -> str {
+    if s.starts_with(prefix) == false {
+        return s
+    }
+    let pieces = s.split(prefix)
+    return join_from2(pieces, 1, prefix).trim()
+}
+
+fn json_empty_map() -> json {
+    let x: json = {}
+    return x
+}
+
+fn parse_steps_text(text: str) -> json {
+    let steps: [json] = []
+    let errors: [str] = []
+    let li = 0
+    for raw_line in text.split("\n") {
+        li = li + 1
+        let line = raw_line.trim()
+        if len(line) == 0 {
+            continue
+        }
+        if line.starts_with("#") {
+            continue
+        }
+        let sudo = false
+        let allow_failure = false
+        let working = line
+        let keep = true
+        while keep {
+            keep = false
+            if working.ends_with("[sudo]") {
+                sudo = true
+                working = join_all(working.split("[sudo]"), "").trim()
+                keep = true
+            }
+            if working.ends_with("[ok]") {
+                allow_failure = true
+                working = join_all(working.split("[ok]"), "").trim()
+                keep = true
+            }
+        }
+        if working.starts_with("argv:") {
+            let rest = strip_prefix(working, "argv:")
+            let parts = rest.split(" ")
+            let argv: [str] = []
+            for p in parts {
+                let piece = p.trim()
+                if len(piece) > 0 {
+                    argv.push(piece)
+                }
+            }
+            if len(argv) == 0 {
+                errors.push("line " + str(li) + ": empty argv")
+                continue
+            }
+            let s: json = {"argv": argv}
+            if sudo {
+                s["sudo"] = true
+            }
+            if allow_failure {
+                s["allow_failure"] = true
+            }
+            steps.push(s)
+        } else {
+            if working.starts_with("shell:") {
+                let rest = strip_prefix(working, "shell:")
+                if len(rest) == 0 {
+                    errors.push("line " + str(li) + ": empty shell command")
+                    continue
+                }
+                let s: json = {"shell": rest}
+                if sudo {
+                    s["sudo"] = true
+                }
+                if allow_failure {
+                    s["allow_failure"] = true
+                }
+                steps.push(s)
+            } else {
+                if working.starts_with("http:") {
+                    let rest = strip_prefix(working, "http:")
+                    let expect = ""
+                    let eq = rest.split("=")
+                    if len(eq) > 1 {
+                        rest = eq[0].trim()
+                        expect = join_from2(eq, 1, "=").trim()
+                    }
+                    let s: json = {"http_get": rest}
+                    if len(expect) > 0 {
+                        s["expect"] = expect
+                    }
+                    if allow_failure {
+                        s["allow_failure"] = true
+                    }
+                    steps.push(s)
+                } else {
+                    errors.push("line " + str(li) + ": must start with argv:, shell: or http:")
+                }
+            }
+        }
+    }
+    return {"steps": steps, "errors": errors}
+}
+
+fn parse_params_text(text: str) -> json {
+    let out: json = {}
+    for raw_line in text.split("\n") {
+        let line = raw_line.trim()
+        if len(line) == 0 {
+            continue
+        }
+        if line.starts_with("#") {
+            continue
+        }
+        let eq = line.split("=")
+        if len(eq) < 2 {
+            continue
+        }
+        let key = eq[0].trim()
+        let value = join_from2(eq, 1, "=").trim()
+        if len(key) > 0 {
+            out[key] = value
+        }
+    }
+    return out
+}

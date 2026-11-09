@@ -1,0 +1,13 @@
+import "std/ml.psd" as ml
+
+fn main() {
+    let empty: [float] = []
+    let m1 = ml.fit(empty, empty)
+    print(str(m1["error"]))
+    let one: [float] = [1.0]
+    let two: [float] = [2.0, 3.0]
+    let m2 = ml.fit(one, two)
+    print(str(m2["error"]))
+    let m3 = ml.fit([1.0, 1.0], [2.0, 3.0])
+    print(str(m3["error"]))
+}

@@ -1,0 +1,9 @@
+fn main() {
+    let r = try_capture(["python3", "examples/lib/train_hang.py",
+                         "/tmp/psd_hang_data.json", "/tmp/psd_hang_model.json"], 2)
+    if r["ok"] {
+        print("BAD timeout")
+    } else {
+        print("timeout ok: " + str(r["code"]))
+    }
+}

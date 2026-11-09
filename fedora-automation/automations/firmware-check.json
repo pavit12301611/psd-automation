@@ -1,0 +1,12 @@
+{
+  "name": "firmware-check",
+  "description": "List devices with available firmware updates via fwupdmgr. Read-only — applying updates is a separate, deliberate step (fwupdmgr update).",
+  "category": "maintenance",
+  "timeout": 120,
+  "requires_sudo": false,
+  "author": "builtin",
+  "steps": [
+    {"argv": ["fwupdmgr", "get-devices"], "allow_failure": true, "timeout": 60, "desc": "Firmware-managed devices."},
+    {"argv": ["fwupdmgr", "get-updates"], "allow_failure": true, "timeout": 60, "desc": "Available firmware updates (empty = everything current)."}
+  ]
+}

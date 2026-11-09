@@ -1,0 +1,16 @@
+{
+  "name": "backup-home",
+  "description": "Create a timestamped tar.gz of the readable parts of $HOME (Documents, Pictures, Music, Videos, Desktop) in the target directory. Missing folders are skipped, not fatal.",
+  "category": "backup",
+  "timeout": 3600,
+  "requires_sudo": false,
+  "author": "builtin",
+  "params": {
+    "target": "${HOME}/Backups/psd-auto"
+  },
+  "steps": [
+    {"argv": ["mkdir", "-p", "${param.target}"], "timeout": 30, "desc": "Create the backup target directory."},
+    {"argv": ["tar", "-czf", "${param.target}/home-${stamp}.tar.gz", "-C", "${HOME}", "Documents", "Pictures", "Music", "Videos", "Desktop"], "allow_failure": true, "timeout": 3600, "desc": "Archive readable XDG dirs. Missing ones make tar report a warning but still archive the rest."},
+    {"argv": ["ls", "-lh", "${param.target}"], "allow_failure": true, "timeout": 30, "desc": "List backups now present in the target."}
+  ]
+}

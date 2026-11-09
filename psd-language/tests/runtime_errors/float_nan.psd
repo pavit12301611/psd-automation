@@ -1,0 +1,5 @@
+fn main() {
+    let zero = 0.0
+    let x = int(zero / zero)
+    print(x)
+}

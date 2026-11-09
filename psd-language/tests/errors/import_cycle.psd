@@ -1,0 +1,5 @@
+import "lib/mod_b.psd" as b
+
+fn main() {
+    print(b.who())
+}

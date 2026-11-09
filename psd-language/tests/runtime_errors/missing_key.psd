@@ -1,0 +1,4 @@
+fn main() {
+    let m: {str: int} = {"a": 1}
+    print(m["nope"])
+}

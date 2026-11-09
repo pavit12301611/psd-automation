@@ -1,0 +1,36 @@
+# Automation patterns that used to be awkward: timed retries with backoff,
+# recoverable process runs, directories, and a heartbeat timestamp.
+# Run: python3 -m psd run examples/automation_pro.psd
+
+fn attempt(cmd: [str], tries: int) -> json {
+    let wait = 100
+    let last: json = {"ok": false, "error": "not run", "code": -1}
+    for i in range(tries) {
+        last = try_capture(cmd, 10)
+        if last["ok"] {
+            return last
+        }
+        print("attempt", i + 1, "failed:", str(last["error"]), "- backing off", wait, "ms")
+        sleep_ms(wait)
+        wait = wait * 2
+    }
+    return last
+}
+
+fn main() {
+    let started = time_ms()
+    make_dir("/tmp/psd_auto_out")
+    print("workdir ready in", cwd())
+
+    let who = attempt(["whoami"], 3)
+    if who["ok"] {
+        print("running as", str(who["value"]).trim())
+    }
+    let step = try_run(["true"], 5)
+    print("step ok:", step["ok"], "code:", int(step["code"]))
+    let flaky = attempt(["false"], 2)
+    print("flaky eventually ok?", flaky["ok"])
+
+    write_file("/tmp/psd_auto_out/heartbeat.txt", "beat at " + str(time_ms()) + "\n")
+    print("done in", time_ms() - started, "ms")
+}

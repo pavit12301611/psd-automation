@@ -1,0 +1,28 @@
+# Maps: {str: T}
+
+fn main() {
+    let scores: {str: int} = {"alice": 10, "bob": 7}
+    scores["carol"] = 12
+    scores["alice"] += 5
+    print(len(scores))
+    print(scores["alice"], scores["bob"], scores["carol"])
+    print(scores.has("bob"), scores.has("dave"))
+
+    for k in scores.keys() {
+        print(k, scores[k])
+    }
+
+    scores.remove("bob")
+    print(len(scores))
+    print(scores.get("alice", -1), scores.get("dave", -1))
+
+    let cfg = {"host": "localhost", "port": 8080, "debug": true}
+    print(cfg["host"], cfg["port"], cfg["debug"])
+
+    let vals = scores.values()
+    print(len(vals))
+
+    let m: {str: str} = {}
+    m["only"] = "one"
+    print(m["only"])
+}

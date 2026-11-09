@@ -1,0 +1,61 @@
+# A playable terminal Snake — the classic first game, in PSD.
+# Run in a real terminal:  psd run examples/game_snake.psd
+# Controls: arrow keys or WASD move (one step per keypress), q quits.
+# Uses std/game.psd (grid/render/keys/seeded RNG) + term_home/read_key.
+#
+# Honest scope: turn-based terminal games (snake, 2048-style, roguelike,
+# tic-tac-toe) are very buildable. Real-time graphics games need a GUI
+# engine — serve a browser canvas from PSD instead (examples/webapp.psd
+# pattern) or use a dedicated engine.
+import "std/game.psd" as game
+
+fn main() {
+    let w = 20
+    let h = 12
+    let rng = game.rng_new(99)
+    let snake: [json] = [game.point(5, 5), game.point(4, 5), game.point(3, 5)]
+    let apple = game.point(12, 6)
+    let dir = [1, 0]
+    let score = 0
+
+    term_clear()
+    while true {
+        let g = game.grid_new(w, h)
+        game.draw_box(g, 0, 0, w, h, "#")
+        game.grid_set(g, int(apple["x"]), int(apple["y"]), "*")
+        for i in range(len(snake)) {
+            game.grid_set(g, int(snake[i]["x"]), int(snake[i]["y"]), "@")
+        }
+        term_home()
+        print(game.grid_render(g))
+        print("score:", score, " (arrows/WASD move, q quits)")
+
+        let key = read_key()
+        if key == "q" or key == "" {
+            break
+        }
+        let d = game.key_dir(key)
+        if d[0] != 0 or d[1] != 0 {
+            dir = d
+        }
+        let head = game.move(snake[0], dir[0], dir[1])
+        if not game.inside(head, w, h) {
+            break
+        }
+        let eating = game.same_point(head, apple)
+        let moved: [json] = [head]
+        let keep = len(snake)
+        if not eating {
+            keep = keep - 1
+        }
+        for i in range(keep) {
+            moved.push(snake[i])
+        }
+        snake = moved
+        if eating {
+            score = score + 1
+            apple = game.point(1 + game.rng_int(rng, w - 2), 1 + game.rng_int(rng, h - 2))
+        }
+    }
+    print("game over — score:", score)
+}

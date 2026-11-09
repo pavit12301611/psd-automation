@@ -1,0 +1,12 @@
+import "std/game.psd" as game
+
+fn main() {
+    let g = game.grid_new(5, 3)
+    game.draw_box(g, 0, 0, 5, 3, "#")
+    game.grid_set(g, 2, 1, "@")
+    print(game.grid_render(g))
+    let d = game.key_dir("left")
+    print(d[0], d[1], game.same_point(game.point(1, 1), game.point(1, 1)))
+    let rng = game.rng_new(42)
+    print(game.rng_int(rng, 1), game.inside(game.point(0, 0), 5, 3))
+}

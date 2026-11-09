@@ -1,0 +1,34 @@
+# Lists and indexing
+
+fn double_all(xs: [int]) -> [int] {
+    let out: [int] = []
+    for x in xs {
+        push(out, x * 2)
+    }
+    return out
+}
+
+fn main() {
+    let xs = [3, 1, 4, 1, 5]
+    print(len(xs))
+    print(xs[0], xs[4])
+    xs[2] = 99
+    print(xs[2])
+    xs[2] += 1
+    print(xs[2])
+
+    let names = ["ada", "grace", "alan"]
+    for n in names {
+        print(f"hi {n}")
+    }
+    print(pop(names), len(names))
+
+    let ys = double_all(xs)
+    print(ys[0], ys[1], ys[2])
+
+    let empty: [float] = []
+    print(len(empty))
+
+    let nested = [[1, 2], [3], []]
+    print(len(nested), nested[0][1], len(nested[2]))
+}

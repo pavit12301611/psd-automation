@@ -1,0 +1,8 @@
+fn main() {
+    let r = try_capture(["python3", "examples/lib/train_fail.py"], 30)
+    if r["ok"] {
+        print("BAD fail")
+    } else {
+        print("trainer fail ok: " + str(r["code"]))
+    }
+}

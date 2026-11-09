@@ -1,0 +1,47 @@
+# A small automation tool: reads a JSON config, writes a report,
+# uses the shell, parses JSON. Run:  psd run examples/automation.psd
+
+fn summarize(path: str) {
+    let text = read_file(path)
+    let lines = text.trim().split("\n")
+    let words = text.trim().split(" ").len()
+    print(f"{path}: {lines.len()} lines, {words} words")
+    return lines.len()
+}
+
+fn main() {
+    # 1. config as JSON (mixed literal -> json)
+    let cfg = {
+        "report": "/tmp/psd_report.txt",
+        "greeting": "hello from PSD",
+        "repeats": 3
+    }
+
+    # 2. build a report with string methods + f-strings
+    let out = str(cfg["greeting"]).upper()
+    write_file(str(cfg["report"]), out + "\n")
+    for i in range(0, int(cfg["repeats"])) {
+        append_file(str(cfg["report"]), f"pass {i + 1}\n")
+    }
+
+    # 3. read it back and summarize
+    let report = read_file(str(cfg["report"])).trim()
+    print("first line:", report.split("\n")[0])
+    print("passes:", report.split("\n").len() - 1)
+    print(summarize(str(cfg["report"])))
+
+    # 4. process integration (argv-based -- no shell involved)
+    let me = capture(["whoami"])
+    print(f"running as {me.trim()}")
+
+    # 5. JSON conditions and comparisons just work
+    let response = json_parse("{\"items\": [1, 2, 3], \"ok\": true, \"status\": 200}")
+    if response["ok"] {
+        let total = 0
+        for n in response["items"] {
+            total += int(n)
+        }
+        print("total:", total)
+    }
+    print("status is 200?", response["status"] == 200)
+}

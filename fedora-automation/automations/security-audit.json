@@ -1,0 +1,16 @@
+{
+  "name": "security-audit",
+  "description": "Read-only security posture report: error log today, failed units, firewalld and SELinux state, pending security updates, recent logins. Changes nothing.",
+  "category": "security",
+  "timeout": 120,
+  "requires_sudo": false,
+  "author": "builtin",
+  "steps": [
+    {"argv": ["journalctl", "-p", "err", "-b", "--no-pager", "-n", "40"], "allow_failure": true, "timeout": 30, "desc": "Error-priority journal entries since boot (needs systemd-journal group membership for full system log)."},
+    {"argv": ["systemctl", "--failed", "--no-legend", "--no-pager"], "allow_failure": true, "timeout": 15, "desc": "System units in failed state."},
+    {"argv": ["firewall-cmd", "--state"], "allow_failure": true, "timeout": 15, "desc": "firewalld state (may need root)."},
+    {"argv": ["sestatus"], "allow_failure": true, "timeout": 15, "desc": "SELinux mode — should report 'enforcing' on Fedora 45."},
+    {"argv": ["dnf", "updateinfo", "list", "--security"], "allow_failure": true, "timeout": 180, "desc": "Pending security updates, when the dnf plugins provide them."},
+    {"argv": ["last", "-n", "15"], "allow_failure": true, "timeout": 15, "desc": "Last 15 logins."}
+  ]
+}

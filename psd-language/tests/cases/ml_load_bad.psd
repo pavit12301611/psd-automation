@@ -1,0 +1,18 @@
+import "std/ml.psd" as ml
+
+fn main() {
+    let l1 = ml.load("/no/such/model_psd.json")
+    print(str(l1["error"]))
+
+    let w1 = try_write_file("/tmp/psd_bad_model.json", "not json")
+    if w1["ok"] {
+        let l2 = ml.load("/tmp/psd_bad_model.json")
+        print(str(l2["error"]))
+    }
+
+    let w2 = try_write_file("/tmp/psd_nob_model.json", "{\"w\": 1}")
+    if w2["ok"] {
+        let l3 = ml.load("/tmp/psd_nob_model.json")
+        print(str(l3["error"]))
+    }
+}

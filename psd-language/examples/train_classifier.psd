@@ -1,0 +1,27 @@
+import "std/ml.psd" as ml
+import "std/math.psd" as math
+import "std/data.psd" as data
+
+# Train + fine-tune-style workflow, end to end in PSD:
+#   CSV data -> scale -> train logistic classifier -> evaluate -> save model
+# Run: python3 -m psd run examples/train_classifier.psd
+# Swap the CSV for your own export (same columns) and it just works.
+
+fn main() {
+    write_file("/tmp/psd_train.csv",
+        "a,b,label\n0,0,0\n0,1,0\n1,0,0\n2,2,1\n3,2,1\n2,3,1\n3,3,1\n1,2,1\n")
+    let loaded = data.load_numbers("/tmp/psd_train.csv", true)
+    if loaded["ok"] {
+        let rows = data.to_matrix(loaded["value"])
+        let xs = data.features(rows, 2)
+        let ys = data.column(rows, 2)
+        let model = ml.fit_logistic(xs, ys, 0.1, 1500)
+        if model["ok"] {
+            print("accuracy:", ml.accuracy(model, xs, ys))
+            print("predict [0,0]:", ml.predict_label(model, [0.0, 0.0]))
+            print("predict [3,3]:", ml.predict_label(model, [3.0, 3.0]))
+            let saved = ml.save("/tmp/psd_classifier.json", model)
+            print("saved:", saved["ok"])
+        }
+    }
+}

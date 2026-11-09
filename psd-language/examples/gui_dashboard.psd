@@ -1,0 +1,40 @@
+import "std/web.psd" as web
+
+# A proper little GUI in the browser: dashboard + form + redirect flow,
+# built from std/web components (no string surgery in handlers).
+# Run: python3 -m psd run examples/gui_dashboard.psd  ->  http://127.0.0.1:8080
+# Env: PSD_PORT=8080, PSD_SERVE_COUNT=0 (serve forever)
+
+fn main() {
+    let tasks: [str] = ["ship PSD v0.4", "write the rating"]
+    let port = http_listen(int(env("PSD_PORT", "8080")))
+    print(str(port))
+    let served = 0
+    let limit = int(env("PSD_SERVE_COUNT", "0"))
+    while limit == 0 or served < limit {
+        let req = http_accept()
+        served = served + 1
+        if req["path"] == "/" {
+            let body = web.h1("PSD Dashboard") +
+            web.nav(["/", "/api/tasks"], ["home", "tasks json"]) +
+            web.list_items(tasks) +
+            web.form_open("/add") + web.text_input("text", "new task") +
+            web.submit_button("add") + web.form_close()
+            web.reply_page("Dashboard", body)
+        } elif req["path"] == "/add" and req["method"] == "POST" {
+            let text = web.form_value(str(req["body"]), "text")
+            if len(text) > 0 {
+                tasks.push(text)
+            }
+            web.redirect_to("/")
+        } elif req["path"] == "/api/tasks" {
+            let out: json = []
+            for i in range(len(tasks)) {
+                out.push(tasks[i])
+            }
+            web.reply_json(200, {"tasks": out, "count": len(tasks)})
+        } else {
+            web.not_found("page")
+        }
+    }
+}

@@ -1,0 +1,30 @@
+# v0.4 ML: multivariate regression, logistic classifier, metrics, scaler
+import "std/ml.psd" as ml
+import "std/math.psd" as math
+
+fn main() {
+    # y = 2a - b + 1
+    let xs: [[float]] = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [2.0, 1.0], [1.0, 2.0]]
+    let ys = [1.0, 3.0, 0.0, 2.0, 4.0, 1.0]
+    let m = ml.fit_multi(xs, ys, 0.1, 800)
+    print(m["ok"])
+    print(math.approx(ml.predict_multi(m, [3.0, 1.0]), 6.0, 0.05))
+    print(float(m["loss"]) < 0.01)
+
+    # linearly separable classes
+    let cx: [[float]] = [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [2.0, 2.0], [3.0, 2.0], [2.0, 3.0]]
+    let cy = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    let c = ml.fit_logistic(cx, cy, 0.2, 1200)
+    print(c["ok"])
+    print(ml.predict_label(c, [0.0, 0.0]), ml.predict_label(c, [3.0, 3.0]))
+    print(math.approx(ml.accuracy(c, cx, cy), 1.0, 0.001))
+    print(math.approx(ml.sigmoid(0.0), 0.5, 0.0001))
+
+    # metrics + scaling + deterministic split
+    print(ml.r2([1.0, 2.0], [1.0, 2.0]))
+    let sc = ml.fit_scaler(xs)
+    let scaled = ml.apply_scaler(xs, sc)
+    print(len(scaled), len(scaled[0]))
+    let sp = ml.train_test_split([1.0, 2.0, 3.0, 4.0], [10.0, 20.0, 30.0, 40.0], 2)
+    print(len(sp["x_train"]), len(sp["x_test"]))
+}

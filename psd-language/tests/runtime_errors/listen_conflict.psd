@@ -1,0 +1,4 @@
+fn main() {
+    let p = http_listen(0)
+    http_listen(p)
+}

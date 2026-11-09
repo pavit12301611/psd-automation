@@ -1,0 +1,44 @@
+import "std/agent.psd" as agent
+
+# Giving a model tools, PSD style — the full loop with a *simulated* model
+# reply, so it runs offline. To use a real model, replace `resp` with:
+#   let resp = json_parse(str(agent.chat(url, env("API_KEY"), payload)["body"]))
+# and dispatch on your own tool names in run_tool().
+
+fn run_tool(name: str, args: json) -> str {
+    # The one place tools execute: explicit, auditable, greppable.
+    if name == "read_file" {
+        let r = try_read_file(str(args["path"]))
+        if r["ok"] {
+            return str(r["value"])
+        }
+        return "error: " + str(r["error"])
+    }
+    if name == "time_now" {
+        return str(time_ms())
+    }
+    return "error: unknown tool " + name
+}
+
+fn main() {
+    let tools: [json] = []
+    tools.push(agent.tool_spec("read_file", "read a text file", agent.string_params(["path"])))
+    tools.push(agent.tool_spec("time_now", "current time in ms", agent.string_params([])))
+    let msgs: [json] = []
+    msgs.push(agent.system_msg("Answer using tools when needed."))
+    msgs.push(agent.user_msg("What is in the README intro?"))
+    let payload = agent.chat_payload("demo-model", msgs, tools)
+    print("payload tools:", len(payload["tools"]))
+
+    # Simulated model reply: one tool call asking for the file.
+    write_file("/tmp/psd_agent_note.txt", "PSD agents read this file.\n")
+    let resp = json_parse("{\"choices\": [{\"message\": {\"content\": \"\", \"tool_calls\": [{\"id\": \"c1\", \"function\": {\"name\": \"read_file\", \"arguments\": \"{\\\"path\\\": \\\"/tmp/psd_agent_note.txt\\\"}\"}}]}}]}")
+    if agent.wants_tools(resp) {
+        let calls = agent.tool_calls(resp)
+        for i in range(len(calls)) {
+            let result = run_tool(str(calls[i]["name"]), calls[i]["args"])
+            let back = agent.tool_result(str(calls[i]["id"]), result)
+            print("tool", str(calls[i]["name"]), "->", str(back["content"]).trim())
+        }
+    }
+}

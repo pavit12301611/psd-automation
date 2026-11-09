@@ -1,0 +1,119 @@
+# Giving a model tools (function calling) from PSD.
+#
+# The loop every tool-using agent runs is:
+#   1. describe tools as json schemas          -> tool_spec()
+#   2. send messages + tools to a chat API     -> chat_payload() + http_request()
+#   3. read back content and/or tool calls     -> reply_content() / tool_calls()
+#   4. run the tool locally (run/capture/files/json — PSD's automation seam)
+#   5. send the result back as a tool message  -> tool_result()
+# This module is the json plumbing for steps 1-3 and 5. Step 4 is your code:
+# a name -> if/elif chain (PSD has no function values, by design — the chain
+# is explicit, greppable, and easy for a model to extend correctly).
+#
+# Payload shape is the OpenAI-compatible one most APIs accept:
+#   {"model": ..., "messages": [...], "tools": [{"type": "function",
+#     "function": {"name": ..., "description": ..., "parameters": {...}}}]}
+# Swapping providers usually means changing the URL + key in http_request().
+
+# ---- messages -------------------------------------------------------------
+fn system_msg(content: str) -> json {
+    return {"role": "system", "content": content}
+}
+
+fn user_msg(content: str) -> json {
+    return {"role": "user", "content": content}
+}
+
+fn assistant_msg(content: str) -> json {
+    return {"role": "assistant", "content": content}
+}
+
+# The result of running a tool, addressed to the call that asked for it.
+fn tool_result(call_id: str, content: str) -> json {
+    return {"role": "tool", "tool_call_id": call_id, "content": content}
+}
+
+# ---- tool schemas -----------------------------------------------------------
+# parameters is a JSON-Schema object, e.g.
+#   {"type": "object", "properties": {"path": {"type": "string"}},
+#    "required": ["path"]}
+fn tool_spec(name: str, description: str, parameters: json) -> json {
+    return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}
+}
+
+# Convenience: a string-parameter schema with the given required fields.
+fn string_params(names: [str]) -> json {
+    let props: json = {}
+    let req: json = []
+    for i in range(len(names)) {
+        props[names[i]] = {"type": "string"}
+        req.push(names[i])
+    }
+    return {"type": "object", "properties": props, "required": req}
+}
+
+# ---- requests ----------------------------------------------------------------
+# Full request body for a chat-completions style endpoint. Pass [] (with a
+# [json] annotation) for tools when the model gets no tools.
+fn chat_payload(model: str, messages: [json], tools: [json]) -> json {
+    let msgs: json = []
+    for i in range(len(messages)) {
+        msgs.push(messages[i])
+    }
+    let payload = {"model": model, "messages": msgs}
+    if len(tools) > 0 {
+        let ts: json = []
+        for i in range(len(tools)) {
+            ts.push(tools[i])
+        }
+        payload["tools"] = ts
+    }
+    return payload
+}
+
+# POST a payload to an OpenAI-compatible endpoint. Returns the http_request
+# envelope {"status", "ok", "body"}; parse reply with the helpers below.
+fn chat(base_url: str, api_key: str, payload: json) -> json {
+    let headers = {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}
+    return http_request("POST", base_url, json_encode(payload), headers)
+}
+
+# ---- replies -------------------------------------------------------------------
+# Assistant text of the first choice ("" when the reply is only tool calls).
+fn reply_content(resp: json) -> str {
+    if resp.has("choices") and len(resp["choices"]) > 0 {
+        let msg = resp["choices"][0]["message"]
+        if msg.has("content") {
+            return str(msg["content"])
+        }
+    }
+    return ""
+}
+
+# Tool calls of the first choice as [{id, name, args}] where args is the
+# parsed argument object ({"_raw": "..."} args when it is not valid json,
+# so a malformed call is data to report, never a crash).
+fn tool_calls(resp: json) -> json {
+    let out: json = []
+    if resp.has("choices") and len(resp["choices"]) > 0 {
+        let msg = resp["choices"][0]["message"]
+        if msg.has("tool_calls") {
+            let calls = msg["tool_calls"]
+            for i in range(len(calls)) {
+                let f = calls[i]["function"]
+                let parsed = try_json_parse(str(f["arguments"]))
+                let args: json = {"_raw": str(f["arguments"])}
+                if parsed["ok"] {
+                    args = parsed["value"]
+                }
+                out.push({"id": str(calls[i]["id"]), "name": str(f["name"]), "args": args})
+            }
+        }
+    }
+    return out
+}
+
+# True when the model asked to run at least one tool.
+fn wants_tools(resp: json) -> bool {
+    return len(tool_calls(resp)) > 0
+}

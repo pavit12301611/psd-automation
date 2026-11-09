@@ -1,0 +1,15 @@
+read err ok
+write/read ok
+int ok
+bad int ok
+json ok
+bad json ok
+capture ok
+exit code ok
+timeout ok
+http err ok
+write err ok
+a&lt;b&gt;&amp;&#39;c&#39;
+a%20b%2Fc
+a b/c
+sqrt ok

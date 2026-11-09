@@ -1,0 +1,25 @@
+# Train a real neural network in PSD: a 2-4-1 MLP learns XOR by
+# backpropagation (std/nn.psd), then the model is saved as JSON and
+# reloaded for predictions. Run: psd run examples/nn_xor.psd
+#
+# This is the class of "AI training" PSD now does natively and fast:
+# small MLPs on tabular/logic data. Large deep learning (GPU tensors,
+# transformers) is still Python/PyTorch territory — see docs/CAPABILITIES.md.
+import "std/nn.psd" as nn
+
+fn main() {
+    let xs = [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]
+    let ys = [[0.0], [1.0], [1.0], [0.0]]
+
+    let trained = nn.train(nn.make_mlp([2, 4, 1], 7), xs, ys, 0.5, 4000)
+    let model = {"sizes": [2, 4, 1], "weights": trained["weights"], "biases": trained["biases"]}
+    print("trained ok:", trained["ok"], "final loss:", trained["loss"])
+
+    # Models are plain JSON: save, load, predict anywhere.
+    write_file("/tmp/psd_xor_model.json", json_encode(model))
+    let loaded = json_parse(read_file("/tmp/psd_xor_model.json"))
+    for i in range(len(xs)) {
+        let out = nn.predict(loaded, xs[i])[0]
+        print(xs[i][0], xs[i][1], "->", out, " class:", out > 0.5)
+    }
+}
