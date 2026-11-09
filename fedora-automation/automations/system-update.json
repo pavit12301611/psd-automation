@@ -1,0 +1,14 @@
+{
+  "name": "system-update",
+  "description": "Refresh dnf metadata and apply all pending Fedora 45 updates (needs sudo). Equivalent to: dnf upgrade --refresh && dnf autoremove.",
+  "category": "maintenance",
+  "timeout": 600,
+  "requires_sudo": true,
+  "author": "builtin",
+  "steps": [
+    {"argv": ["dnf", "check-update"], "allow_failure": true, "timeout": 300, "desc": "Lists pending updates. dnf exits 100 when updates exist — information, not an error."},
+    {"argv": ["dnf", "upgrade", "--refresh", "-y"], "sudo": true, "timeout": 3600, "desc": "Apply all available updates."},
+    {"argv": ["dnf", "autoremove", "-y"], "sudo": true, "allow_failure": true, "timeout": 900, "desc": "Remove packages installed only as dependencies of removed software."},
+    {"argv": ["dnf", "clean", "packages"], "sudo": true, "allow_failure": true, "timeout": 300, "desc": "Drop cached package files to reclaim disk."}
+  ]
+}

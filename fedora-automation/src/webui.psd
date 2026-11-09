@@ -1,0 +1,801 @@
+# psd-auto — local web dashboard (server-rendered, no external assets).
+#
+# Security model: every route requires the session token, passed either as
+# ?token=... or as a form/query field. When bound to loopback the token is
+# optional but still recommended; when bound to any other address a token is
+# mandatory. The server only binds plain HTTP for trusted local networks —
+# never expose it to the internet without a reverse proxy adding TLS.
+#
+# All dynamic text is escaped; automation names are validated slugs before
+# they touch the filesystem. State changes only happen via POST.
+
+import "std/web.psd" as web
+import "util.psd" as util
+import "spec.psd" as spec
+import "registry.psd" as registry
+import "engine.psd" as engine
+import "native.psd" as native
+import "ai.psd" as ai
+from "author.psd" import strip_prefix, join_from2, join_all, json_empty_map, parse_steps_text, parse_params_text
+
+# ------------------------------------------------------- chrome / css ----
+
+fn dashboard_css() -> str {
+    return ":root{color-scheme:dark}*{box-sizing:border-box}" +
+        "body{font-family:system-ui,-apple-system,sans-serif;background:#0d1117;color:#e6edf3;margin:0;line-height:1.5}" +
+        ".wrap{max-width:1024px;margin:0 auto;padding:1.5rem 1rem 4rem}" +
+        "header.bar{background:#161b22;border-bottom:1px solid #30363d;padding:.8rem 1.2rem;display:flex;flex-wrap:wrap;align-items:center;gap:1rem}" +
+        "header.bar b{font-size:1.1rem;color:#58a6ff;letter-spacing:.02em}" +
+        "header.bar a{color:#c9d1d9;text-decoration:none;font-size:.92rem}" +
+        "header.bar a:hover{color:#fff;text-decoration:underline}" +
+        "h1{font-size:1.5rem;margin:1.2rem 0 .4rem;color:#f0f6fc}" +
+        "h2{font-size:1.1rem;margin:1.6rem 0 .5rem;color:#c9d1d9;border-bottom:1px solid #21262d;padding-bottom:.3rem}" +
+        ".card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:.9rem 1rem;margin:.7rem 0}" +
+        ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.7rem}" +
+        ".auto{display:flex;flex-direction:column;gap:.35rem}" +
+        ".auto .nm{font-weight:600;color:#f0f6fc}" +
+        ".badge{display:inline-block;font-size:.68rem;border-radius:99px;padding:.08rem .5rem;border:1px solid #30363d;color:#8b949e;margin-left:.35rem;vertical-align:1px}" +
+        ".badge.sudo{color:#d29922;border-color:#d29922}" +
+        ".badge.user{color:#3fb950;border-color:#3fb950}" +
+        ".badge.ai{color:#a371f7;border-color:#a371f7}" +
+        ".badge.cat{color:#58a6ff;border-color:#1f6feb}" +
+        ".row{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin-top:.3rem}" +
+        "form.inline{display:inline}" +
+        "button,.btn{background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:.32rem .75rem;font-size:.82rem;cursor:pointer;text-decoration:none;display:inline-block}" +
+        "button:hover,.btn:hover{border-color:#58a6ff;color:#fff}" +
+        ".btn-primary{background:#1f6feb;border-color:#1f6feb;color:#fff}" +
+        ".btn-primary:hover{background:#388bfd}" +
+        ".btn-danger{color:#f85149;border-color:#f85149}" +
+        ".meta{font-size:.76rem;color:#8b949e}" +
+        "pre{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:.6rem .8rem;overflow-x:auto;font-size:.76rem;white-space:pre-wrap;word-break:break-word}" +
+        "input,select,textarea{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:.4rem .5rem;font-size:.85rem;width:100%}" +
+        "textarea{min-height:9rem;font-family:ui-monospace,monospace}" +
+        "label{font-size:.8rem;color:#8b949e;display:block;margin:.5rem 0 .2rem}" +
+        ".ok{color:#3fb950}.err{color:#f85149}.warn{color:#d29922}" +
+        "table{width:100%;border-collapse:collapse;font-size:.82rem}" +
+        "th,td{text-align:left;border-bottom:1px solid #21262d;padding:.32rem .45rem;vertical-align:top}" +
+        "th{color:#8b949e;font-weight:600}" +
+        ".flash{border-radius:8px;padding:.55rem .8rem;margin:.6rem 0;border:1px solid #1f6feb}" +
+        ".flash.err{border-color:#f85149;background:#f8514920}" +
+        ".flash.ok{border-color:#3fb950;background:#3fb95020}"
+}
+
+fn token_qs(token: str) -> str {
+    return "?token=" + url_encode(token)
+}
+
+fn page(title: str, body: str, token: str) -> str {
+    let bar = "<header class=bar><b>psd-auto</b>" +
+        "<a href='/" + token_qs(token) + "'>Dashboard</a>" +
+        "<a href='/logs" + token_qs(token) + "'>Logs</a>" +
+        "<a href='/add" + token_qs(token) + "'>Add automation</a>" +
+        "<a href='/ask" + token_qs(token) + "'>Ask AI</a>" +
+        "<span class=meta style='margin-left:auto'>localhost only · token required</span></header>"
+    return web.page_styled(title, dashboard_css(), "<div class=wrap>" + bar + body + "</div>")
+}
+
+fn flash(msg: str, kind: str) -> str {
+    if len(msg) == 0 {
+        return ""
+    }
+    return "<div class='flash " + kind + "'>" + web.esc(msg) + "</div>"
+}
+
+fn last_run_badge(name: str) -> str {
+    let lr = util.last_run(name)
+    if lr.has("ts_ms") == false {
+        return "<span class=meta>never run</span>"
+    }
+    let ok = true
+    if lr.has("ok") {
+        ok = lr["ok"] == true
+    }
+    let cls = "ok"
+    let word = "ok"
+    if not ok {
+        cls = "err"
+        word = "failed"
+    }
+    return "<span class='meta'>last: </span><span class='" + cls + "'>" + word + "</span>" +
+        "<span class=meta> · " + web.esc(util.jget_str(lr, "ts", "")) + " · " + web.esc(util.jget_str(lr, "summary", "")) + "</span>"
+}
+
+fn sudo_badge(s: json) -> str {
+    if engine.spec_requires_sudo(s) {
+        return "<span class='badge sudo'>sudo</span>"
+    }
+    return ""
+}
+
+fn source_badge(s: json) -> str {
+    let author = util.jget_str(s, "author", "user")
+    if author == "ai" {
+        return "<span class='badge ai'>ai</span>"
+    }
+    if author == "builtin" {
+        return "<span class='badge'>builtin</span>"
+    }
+    return "<span class='badge user'>user</span>"
+}
+
+fn all_automations() -> json {
+    let loaded = registry.load_all()
+    let specs = loaded["specs"]
+    for s in native.native_specs() {
+        specs.push(s)
+    }
+    return {"specs": specs, "warnings": loaded["warnings"]}
+}
+
+fn find_any(specs: json, name: str) -> json {
+    for s in specs {
+        if str(s["name"]) == name {
+            return s
+        }
+    }
+    let missing: json = {"__missing__": true}
+    return missing
+}
+
+fn system_summary() -> str {
+    let host = capture(["hostname"]).trim()
+    let os = "unknown linux"
+    let r = try_read_file("/etc/os-release")
+    if r["ok"] {
+        let lines = str(r["value"]).split("\n")
+        for line in lines {
+            if line.starts_with("PRETTY_NAME=") {
+                os = line.replace("PRETTY_NAME=", "").replace("\"", "")
+            }
+        }
+    }
+    let df = try_capture(["df", "-h", "/"], 5)
+    let df_line = ""
+    if df["ok"] == true {
+        let lines = str(df["value"]).trim().split("\n")
+        if len(lines) >= 2 {
+            df_line = lines[1]
+        }
+    }
+    let html = "<div class=card><h2 style='margin-top:0;border:none'>System</h2><table>"
+    html = html + "<tr><th>Hostname</th><td>" + web.esc(host) + "</td></tr>"
+    html = html + "<tr><th>OS</th><td>" + web.esc(os) + "</td></tr>"
+    html = html + "<tr><th>Root fs</th><td><pre style='margin:0'>" + web.esc(df_line) + "</pre></td></tr>"
+    html = html + "<tr><th>AI</th><td>" + ai_status_text() + "</td></tr>"
+    html = html + "</table></div>"
+    return html
+}
+
+fn ai_status_text() -> str {
+    if ai.ai_configured() {
+        return "<span class='ok'>configured</span> <span class=meta>(" + web.esc(ai.ai_model()) + " @ " + web.esc(ai.ai_base_url()) + ")</span>"
+    }
+    return "<span class='warn'>not configured</span> <span class=meta>— set PSD_AI_API_KEY (see Ask AI page)</span>"
+}
+
+# ------------------------------------------------------------ routes ----
+
+fn route_index(query: str, token: str) -> str {
+    let loaded = all_automations()
+    let specs = loaded["specs"]
+    let warnings = loaded["warnings"]
+    let body = "<h1>Workstation autopilot</h1>"
+    body = body + "<p class=meta>Safe, logged, reversible-by-default automations for this Fedora 45 machine. Every run is recorded in ~/.local/state/psd-auto/logs/.</p>"
+    body = body + system_summary()
+    for w in warnings {
+        body = body + "<div class='flash err'>config warning: " + web.esc(str(w)) + "</div>"
+    }
+    body = body + "<h2>Automations (" + str(len(specs)) + ")</h2><div class=grid>"
+    for s in specs {
+        let name = str(s["name"])
+        let cat = util.jget_str(s, "category", "custom")
+        body = body + "<div class='card auto'>"
+        body = body + "<div><span class=nm>" + web.esc(name) + "</span>" + source_badge(s) + sudo_badge(s) + "<span class='badge cat'>" + web.esc(cat) + "</span></div>"
+        body = body + "<div class=meta>" + web.esc(util.jget_str(s, "description", "")) + "</div>"
+        body = body + "<div>" + last_run_badge(name) + "</div>"
+        body = body + "<div class=row>"
+        body = body + "<form class=inline method=post action='/run/" + url_encode(name) + token_qs(token) + "'><input type=hidden name=dry_run value=0><button class=btn-primary>Run</button></form>"
+        body = body + "<form class=inline method=post action='/run/" + url_encode(name) + token_qs(token) + "'><input type=hidden name=dry_run value=1><button title='Print the plan, execute nothing'>Dry run</button></form>"
+        body = body + "<a class=btn href='/automation/" + url_encode(name) + token_qs(token) + "'>Details</a>"
+        if util.jget_str(s, "_source", "") == "user" {
+            body = body + "<a class='btn btn-danger' href='/remove/" + url_encode(name) + token_qs(token) + "'>Remove</a>"
+        }
+        body = body + "</div></div>"
+    }
+    body = body + "</div>"
+    return page("psd-auto · Fedora 45 autopilot", body, token)
+}
+
+fn route_automation_detail(name: str, query: str, token: str) -> str {
+    let loaded = all_automations()
+    let s = find_any(loaded["specs"], name)
+    if s.has("__missing__") {
+        return page("not found", "<h1>404</h1><p>No automation named '" + web.esc(name) + "'.</p>", token)
+    }
+    let body = "<h1>" + web.esc(name) + "</h1>"
+    body = body + "<p>" + web.esc(util.jget_str(s, "description", "")) + "</p>"
+    body = body + "<p>" + source_badge(s) + sudo_badge(s) + " <span class=meta>category: " + web.esc(util.jget_str(s, "category", "custom")) + " · source: " + web.esc(util.jget_str(s, "_path", "native (builtin code)")) + "</span></p>"
+    body = body + "<div class=row><form class=inline method=post action='/run/" + url_encode(name) + token_qs(token) + "'><input type=hidden name=dry_run value=0><button class=btn-primary>Run now</button></form><form class=inline method=post action='/run/" + url_encode(name) + token_qs(token) + "'><input type=hidden name=dry_run value=1><button>Dry run</button></form><form class=inline method=post action='/explain/" + url_encode(name) + token_qs(token) + "'><button title='Ask the AI to diagnose the last failure'>Explain last run with AI</button></form></div>"
+    body = body + "<h2>Spec</h2><pre>" + web.esc(json_encode(s)) + "</pre>"
+    body = body + "<h2>Run history (last 10)</h2>" + logs_table(name, 10, token)
+    return page("psd-auto · " + name, body, token)
+}
+
+fn logs_table(name: str, limit: int, token: str) -> str {
+    let lines = util.read_log_lines(name)
+    if len(lines) == 0 {
+        return "<p class=meta>no runs yet.</p>"
+    }
+    let start = 0
+    if len(lines) > limit {
+        start = len(lines) - limit
+    }
+    let collected: [str] = []
+    for i in range(start, len(lines)) {
+        let r = try_json_parse(lines[i])
+        if r["ok"] == false {
+            continue
+        }
+        let e = r["value"]
+        let ok = e["ok"] == true
+        let cls = "err"
+        let word = "failed"
+        if ok {
+            cls = "ok"
+            word = "ok"
+        }
+        collected.push("<tr><td class='" + cls + "'>" + word + "</td><td>" + web.esc(util.jget_str(e, "ts", "")) + "</td><td>" + web.esc(util.jget_str(e, "summary", "")) + "</td><td>" + web.esc(str(util.jget_int(e, "duration_ms", 0))) + " ms</td></tr>")
+    }
+    collected.reverse()
+    let rows = ""
+    for row in collected {
+        rows = rows + row
+    }
+    return "<table><tr><th>Result</th><th>When (UTC)</th><th>Summary</th><th>Duration</th></tr>" + rows + "</table>"
+}
+
+fn route_logs(query: str, token: str) -> str {
+    let params = web.parse_form(query)
+    let name = ""
+    if params.has("name") {
+        name = str(params["name"])
+    }
+    let body = "<h1>Run history</h1>"
+    if len(name) > 0 {
+        body = body + "<p><a class=btn href='/logs" + token_qs(token) + "'>← all automations</a></p>"
+        body = body + "<h2>" + web.esc(name) + "</h2>" + logs_table(name, 25, token)
+        return page("psd-auto · logs · " + name, body, token)
+    }
+    let recent = util.recent_logs(20)
+    if len(recent) == 0 {
+        body = body + "<p class=meta>No runs recorded yet. Trigger one from the dashboard.</p>"
+        return page("psd-auto · logs", body, token)
+    }
+    let rows = ""
+    for e in recent {
+        let ok = e["ok"] == true
+        let cls = "err"
+        let word = "failed"
+        if ok {
+            cls = "ok"
+            word = "ok"
+        }
+        let nm = util.jget_str(e, "name", "?")
+        rows = rows + "<tr><td class='" + cls + "'>" + word + "</td><td><a style='color:#58a6ff;text-decoration:none' href='/automation/" + url_encode(nm) + token_qs(token) + "'>" + web.esc(nm) + "</a></td><td>" + web.esc(util.jget_str(e, "ts", "")) + "</td><td>" + web.esc(util.jget_str(e, "summary", "")) + "</td></tr>"
+    }
+    body = body + "<table><tr><th>Result</th><th>Automation</th><th>When (UTC)</th><th>Summary</th></tr>" + rows + "</table>"
+    return page("psd-auto · logs", body, token)
+}
+
+# -------------------------------------------------------- add form ----
+
+fn route_add(query: str, token: str, err: str, okmsg: str) -> str {
+    let body = "<h1>Add a new automation</h1>"
+    body = body + flash(okmsg, "ok") + flash(err, "err")
+    body = body + "<p class=meta>Two ways: describe it in plain English (AI writes the spec), or author the spec yourself. Both paths are validated against the same safety rules and stored in ~/.config/psd-auto/automations/.</p>"
+    body = body + "<div class=card><h2 style='margin-top:0;border:none'>1 · Describe it (AI)</h2>"
+    if ai.ai_configured() {
+        body = body + "<p class=meta>Using " + web.esc(ai.ai_model()) + " via " + web.esc(ai.ai_base_url()) + "</p>"
+        body = body + "<form method=post action='/add-ai" + token_qs(token) + "'>"
+        body = body + "<label>What should the automation do?</label>"
+        body = body + "<textarea name=description placeholder=\"e.g. 'clean dangling docker images and unused build cache every Sunday, keep at most 5GB'\" required></textarea>"
+        body = body + "<div class=row><button class=btn-primary type=submit>Generate with AI</button></div>"
+        body = body + "</form>"
+    } else {
+        body = body + "<p class=warn>AI is not configured. Set PSD_AI_API_KEY (OpenAI) or PSD_AI_BASE_URL+PSD_AI_API_KEY (OpenRouter/Ollama) and restart psd-auto. See the Ask AI page for setup.</p>"
+    }
+    body = body + "</div>"
+    body = body + "<div class=card><h2 style='margin-top:0;border:none'>2 · Author it yourself</h2>"
+    body = body + "<form method=post action='/add" + token_qs(token) + "'>"
+    body = body + "<label>Name (slug)</label><input name=name placeholder='weekly-cleanup' required pattern='[a-z0-9][a-z0-9_-]{0,62}'>"
+    body = body + "<label>Description</label><input name=description placeholder='What it does, one line' required>"
+    body = body + "<label>Category</label><select name=category>"
+    for cat in spec.categories() {
+        body = body + "<option value='" + cat + "'>" + cat + "</option>"
+    }
+    body = body + "</select>"
+    body = body + "<label>Step timeout (seconds)</label><input name=timeout type=number min=1 max=7200 value=600>"
+    body = body + "<label>Steps (one per line)</label>"
+    body = body + "<textarea name=steps placeholder='argv: dnf check-update&#10;argv: dnf upgrade --refresh -y [sudo]&#10;argv: flatpak update -y [ok]&#10;shell: journalctl --vacuum-time=14d [sudo][ok]&#10;http: https://fedoraproject.org/ = Fedora' required></textarea>"
+    body = body + "<p class=meta>Line format: <code>argv: cmd a b</code>, <code>shell: pipeline</code>, or <code>http: url = expected-substring</code>. Suffixes: <code>[sudo]</code> runs as root, <code>[ok]</code> tolerates failure, <code>[timeout=900]</code> overrides timeout. Templates: <code>${HOME}</code>, <code>${date}</code>, <code>${stamp}</code>, <code>${param.name}</code>, <code>${config.key}</code>.</p>"
+    body = body + "<label>Params (optional, one <code>name=default</code> per line)</label><textarea name=params style='min-height:3.5rem' placeholder='target=/mnt/backup'></textarea>"
+    body = body + "<div class=row><button class=btn-primary type=submit>Save automation</button></div>"
+    body = body + "</form></div>"
+    return page("psd-auto · add", body, token)
+}
+
+fn handle_add(form: json, token: str) -> str {
+    if form.has("name") == false or form.has("description") == false or form.has("steps") == false {
+        return route_add("", token, "missing required fields (name, description, steps)", "")
+    }
+    let name = str(form["name"]).trim()
+    let description = str(form["description"]).trim()
+    let cat = "custom"
+    if form.has("category") {
+        let c = str(form["category"]).trim()
+        if spec.valid_category(c) {
+            cat = c
+        }
+    }
+    let timeout = 600
+    if form.has("timeout") {
+        let r = try_int(str(form["timeout"]))
+        if r["ok"] == true {
+            timeout = int(r["value"])
+        }
+    }
+    let parsed = parse_steps_text(str(form["steps"]))
+    if len(parsed["errors"]) > 0 {
+        let msg = ""
+        for e in parsed["errors"] {
+            msg = msg + str(e) + "; "
+        }
+        return route_add("", token, msg, "")
+    }
+    let candidate: json = {"name": name, "description": description, "category": cat, "timeout": timeout, "author": "user", "steps": parsed["steps"]}
+    let params_text = ""
+    if form.has("params") {
+        params_text = str(form["params"])
+    }
+    let params = parse_params_text(params_text)
+    if len(params.keys()) > 0 {
+        candidate["params"] = params
+    }
+    let check = spec.validate_spec(candidate)
+    if check["ok"] == false {
+        let msg = ""
+        for e in check["errors"] {
+            msg = msg + str(e) + "; "
+        }
+        return route_add("", token, msg, "")
+    }
+    let saved = save_user_spec(candidate, false)
+    if saved["ok"] == false {
+        return route_add("", token, str(saved["error"]), "")
+    }
+    return page("psd-auto · added", "<h1>Saved</h1><p>" + web.esc(name) + " was added to your automations.</p><a class='btn btn-primary' href='/automation/" + url_encode(name) + token_qs(token) + "'>View it</a>", token)
+}
+
+fn handle_add_ai(form: json, token: str) -> str {
+    if form.has("description") == false {
+        return route_add("", token, "missing description", "")
+    }
+    let description = str(form["description"]).trim()
+    if len(description) < 10 {
+        return route_add("", token, "Please describe it in at least a sentence (10+ characters).", "")
+    }
+    let loaded = all_automations()
+    let names: [str] = []
+    for s in loaded["specs"] {
+        names.push(str(s["name"]))
+    }
+    let generated = ai.generate_automation(description, names)
+    if generated["ok"] == false {
+        return route_add("", token, str(generated["error"]), "")
+    }
+    let specj = generated["spec"]
+    let saved = save_user_spec(specj, false)
+    if saved["ok"] == false {
+        # name collision: uniquify with a numeric suffix and retry once
+        specj["name"] = str(specj["name"]) + "-" + str(rand_int(90) + 10)
+        let saved2 = save_user_spec(specj, false)
+        if saved2["ok"] == false {
+            return route_add("", token, str(saved2["error"]), "")
+        }
+        let nm2 = str(specj["name"])
+        return page("psd-auto · added", "<h1>Saved by AI</h1><p>Automation <b>" + web.esc(nm2) + "</b> was generated and saved.</p><a class='btn btn-primary' href='/automation/" + url_encode(nm2) + token_qs(token) + "'>Review &amp; run it</a>", token)
+    }
+    let nm = str(specj["name"])
+    return page("psd-auto · added", "<h1>Saved by AI</h1><p>Automation <b>" + web.esc(nm) + "</b> was generated and saved.</p><a class='btn btn-primary' href='/automation/" + url_encode(nm) + token_qs(token) + "'>Review &amp; run it</a>", token)
+}
+
+fn save_user_spec(specj: json, allow_overwrite: bool) -> json {
+    let name = str(specj["name"])
+    if spec.valid_name(name) == false {
+        return {"ok": false, "error": "invalid automation name"}
+    }
+    util.ensure_dirs()
+    let path = util.user_automations_dir() + "/" + name + ".json"
+    if exists(path) and not allow_overwrite {
+        return {"ok": false, "error": "automation '" + name + "' already exists"}
+    }
+    specj["_source"] = "user"
+    write_file(path, json_encode(specj))
+    return {"ok": true, "path": path}
+}
+
+# -------------------------------------------------------- ask AI ----
+
+fn route_ask(token: str, question: str, answer: str) -> str {
+    let body = "<h1>Ask AI about this machine</h1>"
+    body = body + "<p class=meta>Answers use live context (OS, kernel, disk, memory) from this workstation. The configured model is " + web.esc(ai.ai_model()) + " @ " + web.esc(ai.ai_base_url()) + ".</p>"
+    if ai.ai_configured() == false {
+        body = body + "<div class='flash err'>AI is not configured.</div>"
+        body = body + "<pre>" + web.esc(ai.setup_help()) + "</pre>"
+        return page("psd-auto · ask", body, token)
+    }
+    body = body + "<div class=card><form method=post action='/ask" + token_qs(token) + "'>"
+    body = body + "<label>Question</label><input name=question placeholder='why is / full? what updates are pending? ...' value='" + web.esc(question) + "' required>"
+    body = body + "<div class=row><button class=btn-primary type=submit>Ask</button></div></form></div>"
+    if len(answer) > 0 {
+        body = body + "<div class=card><h2 style='margin-top:0;border:none'>Answer</h2><pre>" + web.esc(answer) + "</pre></div>"
+    }
+    return page("psd-auto · ask", body, token)
+}
+
+fn handle_ask(form: json, token: str) -> str {
+    if form.has("question") == false {
+        return route_ask(token, "", "Please type a question.")
+    }
+    let question = str(form["question"]).trim()
+    if len(question) < 3 {
+        return route_ask(token, question, "Question is too short.")
+    }
+    let context = util.machine_context()
+    let r = ai.ask(question, context)
+    if r["ok"] == false {
+        return route_ask(token, question, "AI error: " + str(r["error"]))
+    }
+    return route_ask(token, question, str(r["text"]))
+}
+
+fn render_report(name: str, report: json, token: str) -> str {
+    let dry = false
+    if report.has("dry_run") {
+        dry = report["dry_run"] == true
+    }
+    let ok = report["ok"] == true
+    let body = "<h1>" + web.esc(name) + "</h1>"
+    if dry {
+        body = body + "<div class='flash'>dry run — nothing was executed</div>"
+    } else {
+        if ok {
+            body = body + "<div class='flash ok'>run finished: " + web.esc(util.jget_str(report, "summary", "ok")) + "</div>"
+        } else {
+            body = body + "<div class='flash err'>run failed: " + web.esc(util.jget_str(report, "summary", "unknown error")) + "</div>"
+        }
+    }
+    let steps = report["steps"]
+    for i in range(len(steps)) {
+        let s = steps[i]
+        let sok = s["ok"] == true
+        let cls = "ok"
+        let word = "ok"
+        if not sok {
+            cls = "err"
+            word = "failed"
+            if s["allow_failure"] == true {
+                cls = "warn"
+                word = "failed (tolerated)"
+            }
+        }
+        body = body + "<div class=card><div><b class='" + cls + "'>step " + str(i + 1) + " · " + word + "</b> <span class=meta>" + web.esc(str(util.jget_int(s, "duration_ms", 0))) + " ms · exit " + web.esc(str(util.jget_int(s, "code", 0))) + "</span></div>"
+        body = body + "<pre style='margin:.4rem 0'>$ " + web.esc(util.jget_str(s, "cmd", "")) + "</pre>"
+        let out = util.jget_str(s, "output", "")
+        if len(out) > 0 {
+            body = body + "<pre>" + web.esc(out) + "</pre>"
+        }
+        let err = util.jget_str(s, "error", "")
+        if len(err) > 0 {
+            body = body + "<p class='err'>" + web.esc(err) + "</p>"
+        }
+        let desc = util.jget_str(s, "desc", "")
+        if len(desc) > 0 {
+            body = body + "<p class=meta>" + web.esc(desc) + "</p>"
+        }
+        body = body + "</div>"
+    }
+    body = body + "<div class=row><a class=btn href='/automation/" + url_encode(name) + token_qs(token) + "'>← back to " + web.esc(name) + "</a><form class=inline method=post action='/explain/" + url_encode(name) + token_qs(token) + "'><button>Explain this run with AI</button></form></div>"
+    return page("psd-auto · run · " + name, body, token)
+}
+
+fn handle_run(form: json, token: str, name: str) -> str {
+    let loaded = all_automations()
+    let s = find_any(loaded["specs"], name)
+    if s.has("__missing__") {
+        return page("not found", "<h1>404</h1><p>No automation named '" + web.esc(name) + "'.</p>", token)
+    }
+    let dry_run = false
+    if form.has("dry_run") {
+        dry_run = str(form["dry_run"]) == "1"
+    }
+    if registry.is_native(s) {
+        if dry_run {
+            let step: json = {"index": 0, "cmd": "native: " + name, "ok": true, "code": 0, "allow_failure": false, "sudo": false, "desc": "native automation", "duration_ms": 0, "output": "", "error": ""}
+            let steps: json = []
+            steps.push(step)
+            let params: json = {}
+            let plan: json = {"name": name, "ok": true, "dry_run": true, "summary": "native automation — would execute " + name, "steps": steps, "duration_ms": 0, "ts": util.now_iso(), "ts_ms": time_ms(), "total_steps": 1, "failures": 0, "params": params}
+            return render_report(name, plan, token)
+        }
+        let report = native.run_native(name)
+        util.log_run(name, report)
+        return render_report(name, report, token)
+    }
+    # web runs are non-interactive: sudo steps that need a password will fail
+    # cleanly instead of hanging the browser.
+    let report = engine.run_automation(name, s, json_empty_map(), dry_run, true)
+    return render_report(name, report, token)
+}
+
+fn handle_explain(form: json, token: str, name: str) -> str {
+    if ai.ai_configured() == false {
+        return page("psd-auto · explain", "<h1>AI not configured</h1><pre>" + web.esc(ai.setup_help()) + "</pre>", token)
+    }
+    let lines = util.read_log_lines(name)
+    if len(lines) == 0 {
+        return page("psd-auto · explain", "<h1>Nothing to explain</h1><p>'" + web.esc(name) + "' has no recorded runs yet.</p>", token)
+    }
+    let start = 0
+    if len(lines) > 3 {
+        start = len(lines) - 3
+    }
+    let context = ""
+    for i in range(start, len(lines)) {
+        context = context + lines[i] + "\n"
+    }
+    let r = ai.explain_failure(name, context)
+    if r["ok"] == false {
+        return page("psd-auto · explain", "<h1>AI error</h1><pre>" + web.esc(str(r["error"])) + "</pre>", token)
+    }
+    let body = "<h1>AI diagnosis · " + web.esc(name) + "</h1><div class=card><pre>" + web.esc(str(r["text"])) + "</pre></div>"
+    body = body + "<a class=btn href='/automation/" + url_encode(name) + token_qs(token) + "'>← back</a>"
+    return page("psd-auto · explain", body, token)
+}
+
+fn handle_remove_get(token: str, name: str) -> str {
+    let loaded = all_automations()
+    let s = find_any(loaded["specs"], name)
+    if s.has("__missing__") {
+        return page("not found", "<h1>404</h1>", token)
+    }
+    if registry.is_native(s) {
+        return page("cannot remove", "<h1>Built-in</h1><p>'" + web.esc(name) + "' is a native built-in and cannot be removed.</p>", token)
+    }
+    if util.jget_str(s, "_source", "") != "user" {
+        return page("cannot remove", "<h1>Built-in</h1><p>'" + web.esc(name) + "' ships with psd-auto and cannot be removed from the web UI.</p>", token)
+    }
+    let body = "<h1>Remove " + web.esc(name) + "?</h1>"
+    body = body + "<p>This deletes the spec file <code>~/.config/psd-auto/automations/" + web.esc(name) + ".json</code>. Run logs are kept. This cannot be undone.</p>"
+    body = body + "<form method=post action='/remove/" + url_encode(name) + token_qs(token) + "'><button class=btn-danger type=submit>Yes, delete it</button></form> <a class=btn href='/'" + token_qs(token) + ">Cancel</a>"
+    return page("psd-auto · remove", body, token)
+}
+
+fn handle_remove_post(token: str, name: str) -> str {
+    if spec.valid_name(name) == false {
+        return page("bad name", "<h1>Invalid name</h1>", token)
+    }
+    let path = util.user_automations_dir() + "/" + name + ".json"
+    if exists(path) {
+        delete(path)
+        return page("psd-auto · removed", "<h1>Removed</h1><p>'" + web.esc(name) + "' was deleted.</p><a class=btn href='/" + token_qs(token) + "'>Dashboard</a>", token)
+    }
+    return page("not found", "<h1>404</h1><p>No user automation '" + web.esc(name) + "'. Built-ins cannot be removed.</p>", token)
+}
+
+# --------------------------------------------------------- api json ----
+
+fn api_status(token: str) -> str {
+    let loaded = all_automations()
+    let specs = loaded["specs"]
+    let builtin = 0
+    let user = 0
+    for s in specs {
+        if util.jget_str(s, "_source", "") == "user" {
+            user = user + 1
+        } else {
+            builtin = builtin + 1
+        }
+    }
+    let host = capture(["hostname"]).trim()
+    let body: json = {"ok": true, "hostname": host, "automations": len(specs), "builtin": builtin, "user": user, "ai_configured": ai.ai_configured()}
+    http_reply(200, "application/json", json_encode(body))
+    return ""
+}
+
+fn api_automations(token: str) -> str {
+    let loaded = all_automations()
+    let out: [json] = []
+    for s in loaded["specs"] {
+        let item: json = {"name": str(s["name"]), "description": util.jget_str(s, "description", ""), "category": util.jget_str(s, "category", "custom"), "author": util.jget_str(s, "author", "user"), "source": util.jget_str(s, "_source", "user"), "requires_sudo": engine.spec_requires_sudo(s)}
+        out.push(item)
+    }
+    let body: json = {"automations": out}
+    http_reply(200, "application/json", json_encode(body))
+    return ""
+}
+
+fn api_logs(query: str, token: str) -> str {
+    let params = web.parse_form(query)
+    if params.has("name") {
+        let name = str(params["name"])
+        let lines = util.read_log_lines(name)
+        let out: [json] = []
+        for i in range(len(lines)) {
+            let r = try_json_parse(lines[i])
+            if r["ok"] == true {
+                out.push(r["value"])
+            }
+        }
+        let body: json = {"name": name, "runs": out}
+        http_reply(200, "application/json", json_encode(body))
+        return ""
+    }
+    let recent = util.recent_logs(50)
+    let body: json = {"runs": recent}
+    http_reply(200, "application/json", json_encode(body))
+    return ""
+}
+
+# --------------------------------------------------------- plumbing ----
+
+fn check_token(query: str, body_text: str, token: str) -> bool {
+    if len(token) == 0 {
+        return true
+    }
+    let q = web.parse_form(query)
+    if q.has("token") {
+        if str(q["token"]) == token {
+            return true
+        }
+    }
+    let b = web.parse_form(body_text)
+    if b.has("token") {
+        if str(b["token"]) == token {
+            return true
+        }
+    }
+    return false
+}
+
+fn send_html(status: int, body: str) {
+    http_reply(status, "text/html; charset=utf-8", body)
+}
+
+fn route_request(method: str, path_raw: str, query: str, body_text: str, token: str) {
+    let path = path_raw
+    # defensive: tolerate a query string embedded in path
+    if path.contains("?") {
+        let pieces = path.split("?")
+        path = pieces[0]
+        if len(query) == 0 {
+            query = join_from2(pieces, 1, "?")
+        }
+    }
+    if check_token(query, body_text, token) == false {
+        send_html(401, page("unauthorized", "<h1>401</h1><p>Missing or invalid token. Open the URL printed when psd-auto starts.</p>", token))
+        return
+    }
+    let form = web.parse_form(body_text)
+    if method == "GET" {
+        if path == "/" or path == "" {
+            send_html(200, route_index(query, token))
+            return
+        }
+        if path == "/logs" {
+            send_html(200, route_logs(query, token))
+            return
+        }
+        if path == "/add" {
+            send_html(200, route_add(query, token, "", ""))
+            return
+        }
+        if path == "/ask" {
+            send_html(200, route_ask(token, "", ""))
+            return
+        }
+        if path == "/api/status" {
+            api_status(token)
+            return
+        }
+        if path == "/api/automations" {
+            api_automations(token)
+            return
+        }
+        if path == "/api/logs" {
+            api_logs(query, token)
+            return
+        }
+        if path.starts_with("/automation/") {
+            let name = strip_prefix(path, "/automation/")
+            send_html(200, route_automation_detail(name, query, token))
+            return
+        }
+        if path.starts_with("/remove/") {
+            let name = strip_prefix(path, "/remove/")
+            send_html(200, handle_remove_get(token, name))
+            return
+        }
+        send_html(404, page("404", "<h1>404</h1><p>No route: " + web.esc(path) + "</p>", token))
+        return
+    }
+    if method == "POST" {
+        if path.starts_with("/run/") {
+            let name = strip_prefix(path, "/run/")
+            send_html(200, handle_run(form, token, name))
+            return
+        }
+        if path.starts_with("/explain/") {
+            let name = strip_prefix(path, "/explain/")
+            send_html(200, handle_explain(form, token, name))
+            return
+        }
+        if path.starts_with("/remove/") {
+            let name = strip_prefix(path, "/remove/")
+            send_html(200, handle_remove_post(token, name))
+            return
+        }
+        if path == "/add" {
+            send_html(200, handle_add(form, token))
+            return
+        }
+        if path == "/add-ai" {
+            send_html(200, handle_add_ai(form, token))
+            return
+        }
+        if path == "/ask" {
+            send_html(200, handle_ask(form, token))
+            return
+        }
+        send_html(404, page("404", "<h1>404</h1>", token))
+        return
+    }
+    send_html(405, page("405", "<h1>405</h1><p>method not allowed</p>", token))
+}
+
+# Start the dashboard. Binds loopback by default; any other IPv4 address
+# requires a non-empty token.
+fn serve(port: int, host: str, token: str) {
+    let effective_token = token
+    if host != "127.0.0.1" and len(effective_token) == 0 {
+        # refuse to serve an unauthenticated command-execution UI on a
+        # routable address — generate a random token instead
+        effective_token = random_token()
+    }
+    let bound = http_listen(port, host)
+    print("psd-auto dashboard")
+    print("  listening on http://" + host + ":" + str(bound) + "/")
+    if len(effective_token) > 0 {
+        print("  open: http://" + host + ":" + str(bound) + "/?token=" + effective_token)
+    } else {
+        print("  (loopback only, no token — fine for a private workstation)")
+    }
+    print("  press Ctrl+C to stop")
+    while true {
+        let req = http_accept()
+        let method = util.jget_str(req, "method", "GET")
+        let path = util.jget_str(req, "path", "/")
+        let query = util.jget_str(req, "query", "")
+        let body_text = util.jget_str(req, "body", "")
+        route_request(method, path, query, body_text, effective_token)
+    }
+}
+
+fn random_token() -> str {
+    let chars: [str] = ["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z","A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z","0","1","2","3","4","5","6","7","8","9"]
+    let out = ""
+    for i in range(40) {
+        out = out + chars[rand_int(62)]
+    }
+    return out
+}

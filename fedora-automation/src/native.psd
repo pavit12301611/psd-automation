@@ -1,0 +1,426 @@
+# psd-auto — native automations.
+#
+# These are implemented directly in PSD (not as argv spec files) because
+# they do real logic: parsing, sorting, scanning. They appear in listings
+# next to file-backed specs, can be run and scheduled, but cannot be
+# removed or AI-edited.
+
+import "util.psd" as util
+
+fn mk_step(index: int, cmd: str, ok: bool, code: int, output: str, error: str, allow_failure: bool) -> json {
+    return {"index": index, "cmd": cmd, "ok": ok, "code": code,
+            "allow_failure": allow_failure, "sudo": false, "desc": "",
+            "duration_ms": 0, "output": output, "error": error}
+}
+
+
+fn json_list() -> json {
+    let x: json = []
+    return x
+}
+
+fn json_map() -> json {
+    let x: json = {}
+    return x
+}
+
+fn base_report(name: str) -> json {
+    let report: json = {"name": name, "ok": true, "dry_run": false, "ts": util.now_iso(),
+            "ts_ms": time_ms(), "duration_ms": 0, "params": json_map(),
+            "total_steps": 0, "failures": 0, "summary": "", "steps": json_list()}
+    return report
+}
+
+fn finish(report: json, steps: [json], failures: int, started: int) -> json {
+    report["steps"] = steps
+    report["total_steps"] = len(steps)
+    report["failures"] = failures
+    report["duration_ms"] = time_ms() - started
+    if failures == 0 {
+        report["summary"] = "all " + str(len(steps)) + " check(s) passed"
+        report["ok"] = true
+    } else {
+        report["summary"] = str(failures) + " of " + str(len(steps)) + " check(s) could not be read (non-fatal)"
+        report["ok"] = true
+    }
+    return report
+}
+
+fn first_line(text: str) -> str {
+    let t = text.trim()
+    if len(t) == 0 {
+        return ""
+    }
+    return t.split("\n")[0]
+}
+
+fn find_line_prefix(lines: [str], prefix: str) -> str {
+    for line in lines {
+        if line.starts_with(prefix) {
+            return line
+        }
+    }
+    return ""
+}
+
+# ------------------------------------------------------------ doctor ----
+
+fn native_doctor() -> json {
+    let started = time_ms()
+    let report = base_report("doctor")
+    let steps: [json] = []
+    let failures = 0
+
+    # 1. OS release
+    let os_r = try_read_file("/etc/os-release")
+    let os_out = "/etc/os-release unreadable"
+    let os_ok = false
+    if os_r["ok"] {
+        let lines = str(os_r["value"]).split("\n")
+        let pretty = find_line_prefix(lines, "PRETTY_NAME=")
+        let name = find_line_prefix(lines, "NAME=")
+        let ver = find_line_prefix(lines, "VERSION_ID=")
+        os_out = pretty.replace("PRETTY_NAME=", "").replace("\"", "")
+        if len(os_out.trim()) == 0 {
+            os_out = name + " " + ver
+        }
+        os_ok = true
+    }
+    steps.push(mk_step(0, "read /etc/os-release", os_ok, 0, os_out, "", true))
+    if not os_ok {
+        failures = failures + 1
+    }
+
+    # 2. kernel
+    let k = try_capture(["uname", "-srmo"], 5)
+    let k_out = "uname unavailable"
+    let k_ok = k["ok"] == true
+    if k_ok {
+        k_out = str(k["value"]).trim()
+    }
+    steps.push(mk_step(1, "uname -srmo", k_ok, 0, k_out, "", true))
+    if not k_ok {
+        failures = failures + 1
+    }
+
+    # 3. uptime
+    let up_r = try_read_file("/proc/uptime")
+    let up_out = "uptime unavailable"
+    let up_ok = false
+    if up_r["ok"] {
+        let first = str(up_r["value"]).trim().split(" ")[0]
+        let secs_r = try_float(first)
+        if secs_r["ok"] {
+            let total = int(float(secs_r["value"]))
+            let days = total / 86400
+            let hours = (total % 86400) / 3600
+            let mins = (total % 3600) / 60
+            up_out = str(days) + "d " + str(hours) + "h " + str(mins) + "m"
+            up_ok = true
+        }
+    }
+    steps.push(mk_step(2, "read /proc/uptime", up_ok, 0, up_out, "", true))
+    if not up_ok {
+        failures = failures + 1
+    }
+
+    # 4. memory
+    let mem_r = try_read_file("/proc/meminfo")
+    let mem_out = "meminfo unavailable"
+    let mem_ok = false
+    if mem_r["ok"] {
+        let lines = str(mem_r["value"]).split("\n")
+        let total_l = find_line_prefix(lines, "MemTotal:")
+        let avail_l = find_line_prefix(lines, "MemAvailable:")
+        let total_kb = parse_kb(total_l)
+        let avail_kb = parse_kb(avail_l)
+        if total_kb > 0 {
+            let used_kb = total_kb - avail_kb
+            mem_out = "total " + str(total_kb / 1024) + " MB, used " + str(used_kb / 1024) + " MB, available " + str(avail_kb / 1024) + " MB"
+            mem_ok = true
+        }
+    }
+    steps.push(mk_step(3, "read /proc/meminfo", mem_ok, 0, mem_out, "", true))
+    if not mem_ok {
+        failures = failures + 1
+    }
+
+    # 5. root filesystem
+    let df = try_capture(["df", "-h", "/"], 5)
+    let df_out = "df failed"
+    let df_ok = df["ok"] == true
+    if df_ok {
+        df_out = str(df["value"]).trim()
+    }
+    steps.push(mk_step(4, "df -h /", df_ok, 0, df_out, "", true))
+    if not df_ok {
+        failures = failures + 1
+    }
+
+    # 6. failed systemd units (user + system)
+    let sd = try_capture(["systemctl", "--failed", "--no-legend", "--no-pager"], 8)
+    let sd_out = "systemctl not available"
+    let sd_ok = sd["ok"] == true
+    if sd_ok {
+        sd_out = str(sd["value"]).trim()
+        if len(sd_out) == 0 {
+            sd_out = "no failed units"
+        }
+    }
+    steps.push(mk_step(5, "systemctl --failed", sd_ok, 0, sd_out, "", true))
+    if not sd_ok {
+        failures = failures + 1
+    }
+    let sdu = try_capture(["systemctl", "--user", "--failed", "--no-legend", "--no-pager"], 8)
+    let sdu_out = "systemctl --user not available"
+    let sdu_ok = sdu["ok"] == true
+    if sdu_ok {
+        sdu_out = str(sdu["value"]).trim()
+        if len(sdu_out) == 0 {
+            sdu_out = "no failed user units"
+        }
+    }
+    steps.push(mk_step(6, "systemctl --user --failed", sdu_ok, 0, sdu_out, "", true))
+    if not sdu_ok {
+        failures = failures + 1
+    }
+
+    # 7. SELinux
+    let se = try_capture(["sestatus"], 5)
+    let se_out = "sestatus not installed"
+    let se_ok = se["ok"] == true
+    if se_ok {
+        se_out = first_line(str(se["value"]))
+    }
+    steps.push(mk_step(7, "sestatus", se_ok, 0, se_out, "", true))
+    if not se_ok {
+        failures = failures + 1
+    }
+
+    # 8. firewalld
+    let fw = try_capture(["firewall-cmd", "--state"], 5)
+    let fw_out = "firewall-cmd not available (or needs root)"
+    let fw_ok = fw["ok"] == true
+    if fw_ok {
+        fw_out = str(fw["value"]).trim()
+    }
+    steps.push(mk_step(8, "firewall-cmd --state", fw_ok, 0, fw_out, "", true))
+    if not fw_ok {
+        failures = failures + 1
+    }
+
+    # 9. recently installed packages (dnf/rpm)
+    let rpm = try_capture(["rpm", "-qa", "--last"], 15)
+    let rpm_out = "rpm query failed"
+    let rpm_ok = rpm["ok"] == true
+    if rpm_ok {
+        let lines = str(rpm["value"]).split("\n")
+        let lim = 10
+        if len(lines) < 10 {
+            lim = len(lines)
+        }
+        rpm_out = ""
+        for i in range(lim) {
+            rpm_out = rpm_out + lines[i] + "\n"
+        }
+    }
+    steps.push(mk_step(9, "rpm -qa --last", rpm_ok, 0, rpm_out.trim(), "", true))
+    if not rpm_ok {
+        failures = failures + 1
+    }
+
+    return finish(report, steps, failures, started)
+}
+
+fn parse_kb(line: str) -> int {
+    # "MemTotal:        16384200 kB" -> 16384200
+    let parts = line.trim().split(" ")
+    let n = 0
+    for i in range(len(parts)) {
+        let piece = parts[i].trim()
+        if len(piece) == 0 {
+            continue
+        }
+        let r = try_int(piece)
+        if r["ok"] {
+            n = int(r["value"])
+        }
+    }
+    return n
+}
+
+# ------------------------------------------------------ largest-dirs ----
+
+fn native_largest_dirs() -> json {
+    let started = time_ms()
+    let report = base_report("largest-dirs")
+    let steps: [json] = []
+    let failures = 0
+    let home = util.home_dir()
+    let du = try_capture(["du", "-sb", "--max-depth=1", home], 120)
+    let out = ""
+    if not (du["ok"] == true) {
+        steps.push(mk_step(0, "du -sb --max-depth=1 " + home, false, -1, "", "du failed or timed out", false))
+        report["ok"] = false
+        report["steps"] = steps
+        report["total_steps"] = 1
+        report["failures"] = 1
+        report["duration_ms"] = time_ms() - started
+        report["summary"] = "du failed"
+        return report
+    }
+    # parse "bytes\tpath" lines
+    let lines = str(du["value"]).trim().split("\n")
+    let sizes: [int] = []
+    let paths: [str] = []
+    for line in lines {
+        let t = line.trim()
+        if len(t) == 0 {
+            continue
+        }
+        let pieces = t.split("\t")
+        if len(pieces) < 2 {
+            # fall back: first space separates size and path
+            let sp = t.split(" ")
+            if len(sp) >= 2 {
+                let r = try_int(sp[0])
+                if r["ok"] {
+                    sizes.push(int(r["value"]))
+                    paths.push(sp[1])
+                }
+            }
+            continue
+        }
+        let r = try_int(pieces[0].trim())
+        if r["ok"] {
+            sizes.push(int(r["value"]))
+            paths.push(pieces[1])
+        }
+    }
+    # selection sort, descending
+    let n = len(sizes)
+    for i in range(n) {
+        let best = i
+        for j in range(i + 1, n) {
+            if sizes[j] > sizes[best] {
+                best = j
+            }
+        }
+        if best != i {
+            let ts = sizes[i]
+            sizes[i] = sizes[best]
+            sizes[best] = ts
+            let tp = paths[i]
+            paths[i] = paths[best]
+            paths[best] = tp
+        }
+    }
+    let lim = 15
+    if n < 15 {
+        lim = n
+    }
+    for i in range(lim) {
+        out = out + human_bytes(sizes[i]) + "\t" + paths[i] + "\n"
+    }
+    steps.push(mk_step(0, "du -sb --max-depth=1 " + home, true, 0, out.trim(), "", false))
+    return finish(report, steps, failures, started)
+}
+
+fn human_bytes(n: int) -> str {
+    if n >= 1073741824 {
+        return str(n / 1073741824) + " GiB"
+    }
+    if n >= 1048576 {
+        return str(n / 1048576) + " MiB"
+    }
+    if n >= 1024 {
+        return str(n / 1024) + " KiB"
+    }
+    return str(n) + " B"
+}
+
+# ------------------------------------------------------ repo-status ----
+
+fn native_repo_status() -> json {
+    let started = time_ms()
+    let report = base_report("repo-status")
+    let steps: [json] = []
+    let failures = 0
+    let root = env("PSD_AUTO_PROJECTS", "")
+    if len(root) == 0 {
+        root = util.home_dir() + "/Projects"
+    }
+    if not exists(root) {
+        if exists(util.home_dir() + "/projects") {
+            root = util.home_dir() + "/projects"
+        } else {
+            if exists(util.home_dir() + "/src") {
+                root = util.home_dir() + "/src"
+            } else {
+                steps.push(mk_step(0, "scan " + root, false, -1, "", "no projects directory found (tried ~/Projects, ~/projects, ~/src; set PSD_AUTO_PROJECTS)", false))
+                report["ok"] = false
+                report["steps"] = steps
+                report["total_steps"] = 1
+                report["failures"] = 1
+                report["duration_ms"] = time_ms() - started
+                report["summary"] = "projects directory not found"
+                return report
+            }
+        }
+    }
+    let entries = list_dir(root)
+    let out = ""
+    let repo_count = 0
+    for entry in entries {
+        let path = root + "/" + entry
+        if not exists(path + "/.git") {
+            continue
+        }
+        repo_count = repo_count + 1
+        let branch = try_capture(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"], 10)
+        let branch_s = "?"
+        if branch["ok"] == true {
+            branch_s = str(branch["value"]).trim()
+        }
+        let dirty = try_capture(["git", "-C", path, "status", "--porcelain"], 10)
+        let dirty_n = 0
+        if dirty["ok"] == true {
+            let t = str(dirty["value"]).trim()
+            if len(t) > 0 {
+                dirty_n = len(t.split("\n"))
+            }
+        }
+        let ahead = try_capture(["git", "-C", path, "rev-list", "--count", "@{u}..HEAD"], 10)
+        let ahead_s = "-"
+        if ahead["ok"] == true {
+            ahead_s = str(ahead["value"]).trim()
+        }
+        out = out + entry + " [" + branch_s + "] dirty=" + str(dirty_n) + " ahead=" + ahead_s + "\n"
+    }
+    if repo_count == 0 {
+        out = "no git repositories directly under " + root
+    }
+    steps.push(mk_step(0, "git scan " + root, true, 0, out.trim(), "", false))
+    return finish(report, steps, failures, started)
+}
+
+fn native_specs() -> [json] {
+    return [
+        {"name": "doctor", "description": "Full read-only Fedora 45 health report: OS, kernel, uptime, memory, disk, failed systemd units, SELinux, firewalld, recent packages", "category": "system", "_native": true, "_source": "builtin", "author": "builtin", "timeout": 60, "steps": json_list()},
+        {"name": "largest-dirs", "description": "Show the 15 biggest directories directly under $HOME (read-only, helps find space hogs)", "category": "cleanup", "_native": true, "_source": "builtin", "author": "builtin", "timeout": 120, "steps": json_list()},
+        {"name": "repo-status", "description": "Summarize branch, dirty files and ahead-count of every git repo in ~/Projects (or PSD_AUTO_PROJECTS)", "category": "dev", "_native": true, "_source": "builtin", "author": "builtin", "timeout": 60, "steps": json_list()}
+    ]
+}
+
+fn run_native(name: str) -> json {
+    if name == "doctor" {
+        return native_doctor()
+    }
+    if name == "largest-dirs" {
+        return native_largest_dirs()
+    }
+    if name == "repo-status" {
+        return native_repo_status()
+    }
+    return {"name": name, "ok": false, "summary": "unknown native automation", "failures": 1, "duration_ms": 0, "ts": util.now_iso(), "ts_ms": time_ms(), "total_steps": 0, "dry_run": false, "params": json_map(), "steps": json_list()}
+}

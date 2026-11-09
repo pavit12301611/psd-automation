@@ -1,0 +1,23 @@
+# empty list with annotation + assignment types
+
+fn main() {
+    let acc: [int] = []
+    for i in range(0, 5) {
+        push(acc, i * i)
+    }
+    print(len(acc), acc[4])
+
+    let f = 1.0
+    f += 2
+    f = f * 2
+    print(f)
+
+    let s = "abc"
+    s += "def"
+    print(s, s == "abcdef")
+
+    let mut_like = 0
+    mut_like = mut_like + 1
+    mut_like = mut_like + 1
+    print(mut_like)
+}

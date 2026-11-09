@@ -1,0 +1,4 @@
+fn main() {
+    let j = json_parse("{\"a\": 1}")
+    print(j["missing"])
+}

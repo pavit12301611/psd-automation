@@ -1,0 +1,326 @@
+# psd-auto — shared helpers: paths, json convenience, logging, locking.
+#
+# Every function here is total: bad input produces an error value, never a
+# crash. Callers decide what to do with it.
+
+# ---------------------------------------------------------------- paths ----
+
+fn home_dir() -> str {
+    return env("HOME", "/root")
+}
+
+fn xdg_config() -> str {
+    let base = env("XDG_CONFIG_HOME", "")
+    if len(base) == 0 {
+        base = home_dir() + "/.config"
+    }
+    return base
+}
+
+fn xdg_state() -> str {
+    let base = env("XDG_STATE_HOME", "")
+    if len(base) == 0 {
+        base = home_dir() + "/.local/state"
+    }
+    return base
+}
+
+# Root of the installed tool (set by the launcher / installer).
+fn root_dir() -> str {
+    return env("PSD_AUTO_ROOT", "")
+}
+
+fn builtin_dir() -> str {
+    let direct = env("PSD_AUTO_BUILTINS", "")
+    if len(direct) > 0 {
+        return direct
+    }
+    let root = root_dir()
+    if len(root) > 0 {
+        return root + "/automations"
+    }
+    # dev fallback: running from the tool directory itself
+    return cwd() + "/automations"
+}
+
+fn config_dir() -> str {
+    let d = env("PSD_AUTO_CONFIG", "")
+    if len(d) > 0 {
+        return d
+    }
+    return xdg_config() + "/psd-auto"
+}
+
+fn user_automations_dir() -> str {
+    return config_dir() + "/automations"
+}
+
+fn state_dir() -> str {
+    let d = env("PSD_AUTO_STATE", "")
+    if len(d) > 0 {
+        return d
+    }
+    return xdg_state() + "/psd-auto"
+}
+
+fn logs_dir() -> str {
+    return state_dir() + "/logs"
+}
+
+fn locks_dir() -> str {
+    return state_dir() + "/locks"
+}
+
+fn config_file() -> str {
+    return config_dir() + "/config.json"
+}
+
+# Create the directory layout if it does not exist yet.
+fn ensure_dirs() {
+    make_dir(config_dir())
+    make_dir(user_automations_dir())
+    make_dir(state_dir())
+    make_dir(logs_dir())
+    make_dir(locks_dir())
+}
+
+# ------------------------------------------------------- json helpers ----
+
+fn jget_str(j: json, key: str, fallback: str) -> str {
+    if j.has(key) {
+        return str(j[key])
+    }
+    return fallback
+}
+
+fn jget_int(j: json, key: str, fallback: int) -> int {
+    if j.has(key) {
+        let r = try_int(str(j[key]))
+        if r["ok"] {
+            return int(r["value"])
+        }
+    }
+    return fallback
+}
+
+fn jget_bool(j: json, key: str, fallback: bool) -> bool {
+    if j.has(key) {
+        return j[key] == true
+    }
+    return fallback
+}
+
+# Keep the last `max_lines` lines of a possibly huge output blob.
+# (PSD strings have no substring builtin; lines are the natural unit for
+# command output, and each log entry stays small enough to store.)
+fn tail_lines(s: str, max_lines: int) -> str {
+    let lines = s.split("\n")
+    if len(lines) <= max_lines {
+        return s
+    }
+    let out = "… (showing last " + str(max_lines) + " of " + str(len(lines)) + " lines)\n"
+    for i in range(len(lines) - max_lines, len(lines)) {
+        out = out + lines[i]
+        if i < len(lines) - 1 {
+            out = out + "\n"
+        }
+    }
+    return out
+}
+
+# ------------------------------------------------------- config file ----
+
+# Read one scalar out of config.json ("" when unset/missing/invalid).
+fn config_value(key: str) -> str {
+    let r = try_read_file(config_file())
+    if r["ok"] == false {
+        return ""
+    }
+    let parsed = try_json_parse(str(r["value"]))
+    if parsed["ok"] == false {
+        return ""
+    }
+    let cfg = parsed["value"]
+    if not cfg.has(key) {
+        return ""
+    }
+    return str(cfg[key])
+}
+
+# ------------------------------------------------------------- logs ----
+
+fn now_iso() -> str {
+    let d = try_capture(["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"], 2)
+    if d["ok"] {
+        return str(d["value"]).trim()
+    }
+    return str(time_ms())
+}
+
+fn stamp() -> str {
+    let d = try_capture(["date", "-u", "+%Y%m%d-%H%M%S"], 2)
+    if d["ok"] {
+        return str(d["value"]).trim()
+    }
+    return str(time_ms())
+}
+
+# Append one jsonl line to the per-automation log.
+fn log_run(name: str, entry: json) {
+    ensure_dirs()
+    append_file(logs_dir() + "/" + name + ".jsonl", json_encode(entry) + "\n")
+}
+
+# All jsonl lines for one automation (oldest first). Missing log -> [].
+fn read_log_lines(name: str) -> [str] {
+    let out: [str] = []
+    let r = try_read_file(logs_dir() + "/" + name + ".jsonl")
+    if r["ok"] == false {
+        return out
+    }
+    let text = str(r["value"]).trim()
+    if len(text) == 0 {
+        return out
+    }
+    return text.split("\n")
+}
+
+fn last_run(name: str) -> json {
+    let lines = read_log_lines(name)
+    if len(lines) == 0 {
+        return {"ok": false, "error": "never run"}
+    }
+    let parsed = try_json_parse(lines[len(lines) - 1])
+    if parsed["ok"] == false {
+        return {"ok": false, "error": "corrupt log line"}
+    }
+    return parsed["value"]
+}
+
+# Recent entries across all automations, newest first, at most `limit`.
+fn recent_logs(limit: int) -> [json] {
+    let acc: [json] = []
+    let dir = logs_dir()
+    if not exists(dir) {
+        return acc
+    }
+    let files = list_dir(dir)
+    for f in files {
+        if not f.ends_with(".jsonl") {
+            continue
+        }
+        let r = try_read_file(dir + "/" + f)
+        if r["ok"] == false {
+            continue
+        }
+        let text = str(r["value"]).trim()
+        if len(text) == 0 {
+            continue
+        }
+        let lines = text.split("\n")
+        let start = 0
+        if len(lines) > 8 {
+            start = len(lines) - 8
+        }
+        for i in range(start, len(lines)) {
+            let parsed = try_json_parse(lines[i])
+            if parsed["ok"] {
+                acc.push(parsed["value"])
+            }
+        }
+    }
+    # sort by "ts_ms" descending with selection sort (few entries)
+    let n = len(acc)
+    for i in range(n) {
+        let best = i
+        for j in range(i + 1, n) {
+            if jget_int(acc[j], "ts_ms", 0) > jget_int(acc[best], "ts_ms", 0) {
+                best = j
+            }
+        }
+        if best != i {
+            let tmp = acc[i]
+            acc[i] = acc[best]
+            acc[best] = tmp
+        }
+    }
+    let out: [json] = []
+    for i in range(len(acc)) {
+        if i >= limit {
+            break
+        }
+        out.push(acc[i])
+    }
+    return out
+}
+
+# ------------------------------------------------------------ locks ----
+
+# Best-effort mutual exclusion so two copies of the same automation do not
+# trample each other. Stale locks (older than an hour) are overridden.
+fn acquire_lock(name: str) -> json {
+    ensure_dirs()
+    let path = locks_dir() + "/" + name + ".lock"
+    if exists(path) {
+        let r = try_read_file(path)
+        let stale = true
+        if r["ok"] {
+            let prev = try_int(str(r["value"]).trim())
+            if prev["ok"] {
+                let age = time_ms() - int(prev["value"])
+                if age < 3600000 {
+                    stale = false
+                }
+            }
+        }
+        if not stale {
+            return {"ok": false, "error": "another '" + name + "' run is in progress (lock: " + path + ")"}
+        }
+        delete(path)
+    }
+    write_file(path, str(time_ms()))
+    return {"ok": true, "path": path}
+}
+
+fn release_lock(name: str) {
+    let path = locks_dir() + "/" + name + ".lock"
+    if exists(path) {
+        delete(path)
+    }
+}
+
+# Live context block about this machine, used to ground AI answers.
+fn machine_context() -> str {
+    let host = capture(["hostname"]).trim()
+    let os = "unknown"
+    let r = try_read_file("/etc/os-release")
+    if r["ok"] {
+        let lines = str(r["value"]).split("\n")
+        for line in lines {
+            if line.starts_with("PRETTY_NAME=") {
+                os = line.replace("PRETTY_NAME=", "").replace("\"", "")
+            }
+        }
+    }
+    let kernel = "unknown"
+    let k = try_capture(["uname", "-srmo"], 5)
+    if k["ok"] == true {
+        kernel = str(k["value"]).trim()
+    }
+    let mem = "unknown"
+    let m = try_read_file("/proc/meminfo")
+    if m["ok"] {
+        let lines = str(m["value"]).split("\n")
+        for line in lines {
+            if line.starts_with("MemTotal:") {
+                mem = line.trim()
+            }
+        }
+    }
+    let df = "unknown"
+    let d = try_capture(["df", "-h", "/"], 5)
+    if d["ok"] == true {
+        df = str(d["value"]).trim()
+    }
+    return "hostname=" + host + "\nos=" + os + "\nkernel=" + kernel + "\n" + mem + "\nroot filesystem:\n" + df
+}

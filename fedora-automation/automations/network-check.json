@@ -1,0 +1,49 @@
+{
+  "name": "network-check",
+  "description": "Connectivity report: raw ICMP to 1.1.1.1, DNS + reachability of fedoraproject.org, and HTTPS reachability of two developer endpoints. Read-only.",
+  "category": "network",
+  "timeout": 60,
+  "requires_sudo": false,
+  "author": "builtin",
+  "steps": [
+    {
+      "argv": [
+        "ping",
+        "-c",
+        "2",
+        "-W",
+        "3",
+        "1.1.1.1"
+      ],
+      "allow_failure": true,
+      "timeout": 15,
+      "desc": "Raw ICMP reachability (no DNS involved). Failure usually means no route or ICMP is filtered."
+    },
+    {
+      "argv": [
+        "ping",
+        "-c",
+        "2",
+        "-W",
+        "3",
+        "fedoraproject.org"
+      ],
+      "allow_failure": true,
+      "timeout": 15,
+      "desc": "DNS resolution + reachability of fedoraproject.org."
+    },
+    {
+      "http_get": "https://fedoraproject.org/",
+      "expect": "Fedora",
+      "timeout": 30,
+      "desc": "HTTPS fetch of the Fedora project page. Tolerated: a network may be up while this is blocked.",
+      "allow_failure": true
+    },
+    {
+      "http_get": "https://registry.npmjs.org/",
+      "timeout": 30,
+      "desc": "HTTPS reachability of the npm registry (developer endpoint). Tolerated like the other steps.",
+      "allow_failure": true
+    }
+  ]
+}

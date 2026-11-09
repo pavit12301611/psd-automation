@@ -1,0 +1,11 @@
+fn scale(x: int) -> int {
+    return x * 10
+}
+
+fn who() -> str {
+    return "geometry"
+}
+
+fn triple(x: int) -> int {
+    return x * 3
+}

@@ -1,0 +1,23 @@
+# Numeric edge-case semantics: 64-bit wrapping ints, IEEE floats, C division
+
+fn main() {
+    # int arithmetic wraps (two's complement) -- documented behavior
+    print(9223372036854775807 + 1)
+    print(-9223372036854775808 - 1)
+
+    # division truncates toward zero; % follows the dividend's sign (C rules)
+    print(7 / 2, -7 / 2, 7 / -2)
+    print(7 % 2, -7 % 2, 7 % -2)
+
+    # float: IEEE-754 inf / nan; no panics
+    print(1.0 / 0.0)
+    print(-1.0 / 0.0)
+    print(0.0 / 0.0 != 0.0 / 0.0)     # nan != nan -> true
+
+    # int/float promotion and comparison across types
+    print(1 < 1.5, 2 == 2.0, 0.1 + 0.2 == 0.3)
+
+    # large magnitudes
+    print(1000000 * 1000000)
+    print(float(9007199254740993))    # 2^53 + 1: float cannot represent it exactly
+}

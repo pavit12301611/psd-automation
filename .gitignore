@@ -1,0 +1,8 @@
+.venv/
+scratch/
+fedora-automation/build/
+dist/
+*.log
+__pycache__/
+*.pyc
+psd-build-*/

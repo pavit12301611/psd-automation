@@ -1,0 +1,47 @@
+# Scopes, shadowing, early returns from inside loops
+
+fn first_big(xs: [int], limit: int) -> int {
+    for x in xs {
+        if x > limit {
+            return x
+        }
+    }
+    return -1
+}
+
+fn greet_if_long(name: str) {
+    if len(name) > 3 {
+        let msg = "long: " + name
+        print(msg)
+        return
+    }
+    print("short")
+}
+
+fn main() {
+    let x = 1
+    {
+        let x = 2
+        {
+            let x = 3
+            print(x)
+        }
+        print(x)
+    }
+    print(x)
+
+    print(first_big([1, 2, 9, 4], 5))
+    print(first_big([1, 2], 5))
+
+    greet_if_long("Alexander")
+    greet_if_long("Al")
+
+    # early return with str in scope (rc cleanup path)
+    let names = ["a", "bb", "ccc", "dddd"]
+    for n in names {
+        if len(n) >= 3 {
+            print(f"found {n}")
+            return
+        }
+    }
+}

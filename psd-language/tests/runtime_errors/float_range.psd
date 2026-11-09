@@ -1,0 +1,4 @@
+fn main() {
+    let x = int(1e300)
+    print(x)
+}

@@ -1,0 +1,28 @@
+import "lib/mod_a.psd" as a
+import "std/math.psd" as math
+from "lib/mod_a.psd" import triple
+
+fn scale(x: int) -> int {
+    return x + 1
+}
+
+fn who() -> str {
+    return "algebra"
+}
+
+fn twice(x: int) -> int {
+    return scale(scale(x))
+}
+
+fn main() {
+    print(scale(5))            # 6 (own function wins in this file)
+    print(a.scale(5))          # 50 (namespaced)
+    print(who())               # algebra
+    print(a.who())             # geometry
+    print(twice(3))            # 5
+    print(a.scale(twice(1)))   # 30
+    print(triple(4))           # 12 (from-import)
+    print(math.clamp(42, 0, 10))   # 10
+    print(math.powi(2, 10))        # 1024
+    print(math.abs(-7))            # 7
+}

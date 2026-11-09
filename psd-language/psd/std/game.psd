@@ -1,0 +1,107 @@
+# Terminal game kit: grids, rendering, seeded randomness, movement.
+#
+# PSD desktop games are terminal games: draw a [[str]] grid, print it
+# with term_home()/term_clear(), read one key with read_key(), advance
+# with sleep_ms(...). The loop Python game tutorials teach — natively
+# compiled. Grid cells are 1-char strings; coordinates are grid[y][x].
+
+fn grid_new(w: int, h: int) -> [[str]] {
+    let out: [[str]] = []
+    for y in range(h) {
+        let row: [str] = []
+        for x in range(w) {
+            row.push(".")
+        }
+        out.push(row)
+    }
+    return out
+}
+
+fn grid_set(g: [[str]], x: int, y: int, ch: str) {
+    if y >= 0 and y < len(g) {
+        if x >= 0 and x < len(g[y]) {
+            g[y][x] = ch
+        }
+    }
+}
+
+fn grid_get(g: [[str]], x: int, y: int) -> str {
+    if y >= 0 and y < len(g) {
+        if x >= 0 and x < len(g[y]) {
+            return g[y][x]
+        }
+    }
+    return ""
+}
+
+fn grid_render(g: [[str]]) -> str {
+    let rows: [str] = []
+    for y in range(len(g)) {
+        rows.push(g[y].join(""))
+    }
+    return rows.join("\n")
+}
+
+fn draw_box(g: [[str]], x: int, y: int, w: int, h: int, ch: str) {
+    for i in range(w) {
+        grid_set(g, x + i, y, ch)
+        grid_set(g, x + i, y + h - 1, ch)
+    }
+    for j in range(h) {
+        grid_set(g, x, y + j, ch)
+        grid_set(g, x + w - 1, y + j, ch)
+    }
+}
+
+# Points are json {"x": int, "y": int} — easy to keep in game state.
+fn point(x: int, y: int) -> json {
+    return {"x": x, "y": y}
+}
+
+fn move(p: json, dx: int, dy: int) -> json {
+    return {"x": int(p["x"]) + dx, "y": int(p["y"]) + dy}
+}
+
+fn same_point(a: json, b: json) -> bool {
+    return int(a["x"]) == int(b["x"]) and int(a["y"]) == int(b["y"])
+}
+
+fn inside(p: json, w: int, h: int) -> bool {
+    return int(p["x"]) >= 0 and int(p["x"]) < w and int(p["y"]) >= 0 and int(p["y"]) < h
+}
+
+# Key name (from read_key) -> [dx, dy]: arrows + WASD, else [0, 0].
+fn key_dir(key: str) -> [int] {
+    if key == "up" or key == "w" {
+        return [0, -1]
+    }
+    if key == "down" or key == "s" {
+        return [0, 1]
+    }
+    if key == "left" or key == "a" {
+        return [-1, 0]
+    }
+    if key == "right" or key == "d" {
+        return [1, 0]
+    }
+    return [0, 0]
+}
+
+# Deterministic RNG (LCG) in a [int] state box: same seed, same game.
+fn rng_new(seed: int) -> [int] {
+    let s = seed % 2147483648
+    if s <= 0 {
+        s = s + 2147483647
+    }
+    return [s]
+}
+
+fn rng_int(state: [int], n: int) -> int {
+    state[0] = (state[0] * 1103515245 + 12345) % 2147483648
+    return state[0] % n
+}
+
+fn rng_float(state: [int]) -> float {
+    state[0] = (state[0] * 1103515245 + 12345) % 2147483648
+    return float(state[0]) / 2147483648.0
+}

@@ -1,0 +1,11 @@
+hello world
+2 + 2 = 4
+escapes: x	y"z
+{literal braces}
+nested: 7
+float in string: 3.5
+bool in string: true
+plain braces stay literal: {name}
+json-like: {"a": [1, 2], "b": {"c": true}}
+concat works too
+0 3

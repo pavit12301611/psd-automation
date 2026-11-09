@@ -1,0 +1,13 @@
+{
+  "name": "package-log",
+  "description": "What changed on this machine: last 40 packages installed/updated, recent dnf transactions, pending updates. Read-only.",
+  "category": "maintenance",
+  "timeout": 300,
+  "requires_sudo": false,
+  "author": "builtin",
+  "steps": [
+    {"shell": "rpm -qa --last | head -40", "allow_failure": true, "timeout": 60, "desc": "Newest packages first (last 40)."},
+    {"argv": ["dnf", "history"], "allow_failure": true, "timeout": 60, "desc": "Recent dnf transactions."},
+    {"argv": ["dnf", "check-update"], "allow_failure": true, "timeout": 300, "desc": "Pending updates. dnf exits 100 when updates exist — that is information, not an error."}
+  ]
+}

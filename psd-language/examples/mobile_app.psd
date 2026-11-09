@@ -1,0 +1,37 @@
+# "Mobile app" the PSD way: one compiled binary serves a responsive,
+# installable-style web app (PWA manifest) and opens it in the browser.
+#   psd run examples/mobile_app.psd     -> http://127.0.0.1:8090
+# Users get an app-like local tool with no app-store build, no Python
+# install. Honest limit: this is not a native APK/IPA; for stores,
+# wrap the same pages in a WebView shell later.
+import "std/web.psd" as web
+
+fn main() {
+    let port = http_listen(int(env("PSD_PORT", "8090")))
+    if port <= 0 {
+        print("failed to bind")
+        return
+    }
+    print("app on http://127.0.0.1:" + str(port))
+    open_url("http://127.0.0.1:" + str(port) + "/")
+    let notes: [str] = []
+    while true {
+        let req = http_accept()
+        let path = str(req["path"])
+        if path == "/manifest.json" {
+            http_reply(200, "application/json", web.pwa_manifest("PSD Notes", "Notes", "#2563eb"))
+        } else {
+            if path == "/add" {
+                notes.push(web.q1(req, "note"))
+                http_redirect("/")
+            } else {
+                let items = ""
+                for i in range(len(notes)) {
+                    items = items + "<li>" + web.esc(notes[i]) + "</li>"
+                }
+                let body = "<h1>PSD Notes</h1><form method=\"get\" action=\"/add\"><input name=\"note\" placeholder=\"New note\"><button class=\"btn\">Add</button></form><ul>" + items + "</ul>"
+                http_reply(200, "text/html", web.page_styled("PSD Notes", web.base_css(), body))
+            }
+        }
+    }
+}

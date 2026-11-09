@@ -1,0 +1,44 @@
+# Control flow: while, break, continue, elif, nested loops
+
+fn main() {
+    let i = 0
+    while true {
+        i += 1
+        if i > 5 {
+            break
+        }
+        if i % 2 == 0 {
+            continue
+        }
+        print(f"odd {i}")
+    }
+
+    for a in range(0, 3) {
+        for b in range(0, 3) {
+            if a == b {
+                continue
+            }
+            if a + b > 2 {
+                break
+            }
+            print(a, b)
+        }
+    }
+
+    let n = 7
+    if n < 0 {
+        print("neg")
+    } elif n == 0 {
+        print("zero")
+    } elif n < 10 {
+        print("small")
+    } else {
+        print("big")
+    }
+
+    let k = 0
+    while k < 3 {
+        k += 1
+    }
+    print(f"k = {k}")
+}

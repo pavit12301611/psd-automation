@@ -1,0 +1,272 @@
+# psd-auto — execution engine.
+#
+# Runs an automation spec end to end and returns a structured report:
+#   {"name", "ok", "dry_run", "ts", "ts_ms", "duration_ms", "summary",
+#    "params": {...}, "total_steps": int, "failures": int,
+#    "steps": [ {"index","cmd","ok","code","allow_failure","sudo","desc",
+#                "duration_ms","output","error"} ... ]}
+#
+# Design rules:
+#   * argv-based steps only; shell steps run via sh -c but were validated
+#   * every step has a timeout (spec-level default or 600s)
+#   * failures are data: allow_failure keeps the run going
+#   * templating: ${HOME}, ${cwd}, ${date}, ${stamp}, ${param.NAME},
+#     ${config.KEY} (read from config.json at run time)
+
+import "util.psd" as util
+
+fn join_strings(parts: [str], sep: str) -> str {
+    let out = ""
+    for i in range(len(parts)) {
+        out = out + parts[i]
+        if i < len(parts) - 1 {
+            out = out + sep
+        }
+    }
+    return out
+}
+
+fn jget_int_local(j: json, key: str, fallback: int) -> int {
+    if j.has(key) {
+        let r = try_int(str(j[key]))
+        if r["ok"] {
+            return int(r["value"])
+        }
+    }
+    return fallback
+}
+
+fn jget_bool_local(j: json, key: str, fallback: bool) -> bool {
+    if j.has(key) {
+        return j[key] == true
+    }
+    return fallback
+}
+
+fn jget_str_local(j: json, key: str, fallback: str) -> str {
+    if j.has(key) {
+        return str(j[key])
+    }
+    return fallback
+}
+
+# Resolve ${config.key} tokens anywhere in a string. Implemented with
+# split() so no substring builtin is needed; lossless for any byte content.
+fn substitute_config(s: str) -> str {
+    if not s.contains("${config.") {
+        return s
+    }
+    let parts = s.split("${config.")
+    let out = parts[0]
+    for i in range(1, len(parts)) {
+        let segs = parts[i].split("}")
+        let key = segs[0]
+        let rest = ""
+        for j in range(1, len(segs)) {
+            rest = rest + segs[j]
+            if j < len(segs) - 1 {
+                rest = rest + "}"
+            }
+        }
+        out = out + util.config_value(key) + rest
+    }
+    return out
+}
+
+fn substitute(s: str, params: json) -> str {
+    let out = s
+    if out.contains("${HOME}") {
+        out = out.replace("${HOME}", util.home_dir())
+    }
+    if out.contains("${cwd}") {
+        out = out.replace("${cwd}", cwd())
+    }
+    if out.contains("${date}") {
+        let d = try_capture(["date", "-u", "+%Y-%m-%d"], 2)
+        if d["ok"] {
+            out = out.replace("${date}", str(d["value"]).trim())
+        }
+    }
+    if out.contains("${stamp}") {
+        out = out.replace("${stamp}", util.stamp())
+    }
+    if out.contains("${param.") {
+        for k in params.keys() {
+            out = out.replace("${param." + k + "}", str(params[k]))
+        }
+    }
+    if out.contains("${config.") {
+        out = substitute_config(out)
+    }
+    return out
+}
+
+# Merge spec param defaults with CLI overrides: {"k": "default", ...}
+fn merged_params(spec: json, overrides: json) -> json {
+    let out: json = {}
+    if spec.has("params") {
+        for k in spec["params"].keys() {
+            out[k] = str(spec["params"][k])
+        }
+    }
+    for k in overrides.keys() {
+        out[k] = str(overrides[k])
+    }
+    return out
+}
+
+fn spec_requires_sudo(spec: json) -> bool {
+    if not spec.has("steps") {
+        return false
+    }
+    let steps = spec["steps"]
+    for i in range(len(steps)) {
+        if steps[i].has("sudo") {
+            if steps[i]["sudo"] == true {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+fn step_timeout(spec: json, s: json) -> int {
+    let fallback = jget_int_local(spec, "timeout", 600)
+    if s.has("timeout") {
+        let r = try_int(str(s["timeout"]))
+        if r["ok"] {
+            return int(r["value"])
+        }
+    }
+    return fallback
+}
+
+fn run_http_step(s: json, params: json, index: int, dry_run: bool, desc: str, allow_failure: bool) -> json {
+    let url = substitute(str(s["http_get"]), params)
+    let expect = ""
+    if s.has("expect") {
+        expect = str(s["expect"])
+    }
+    let cmd = "GET " + url
+    if dry_run {
+        return {"index": index, "cmd": cmd, "ok": true, "code": 0,
+                "allow_failure": allow_failure, "sudo": false, "desc": desc,
+                "duration_ms": 0, "output": "", "error": "", "dry_run": true}
+    }
+    let start = time_ms()
+    let r = try_http_get(url)
+    let ok = r["ok"] == true
+    let out = ""
+    if r.has("value") {
+        out = util.tail_lines(str(r["value"]), 20)
+    }
+    let err = ""
+    if not ok {
+        err = jget_str_local(r, "error", "http request failed")
+    }
+    if ok and len(expect) > 0 {
+        if out.contains(expect) == false {
+            ok = false
+            err = "response did not contain expected text: " + expect
+        }
+    }
+    return {"index": index, "cmd": cmd, "ok": ok, "code": 0,
+            "allow_failure": allow_failure, "sudo": false, "desc": desc,
+            "duration_ms": time_ms() - start, "output": out, "error": err}
+}
+
+fn run_step(spec: json, s: json, params: json, index: int, dry_run: bool, non_interactive: bool) -> json {
+    let sudo = jget_bool_local(s, "sudo", false)
+    let allow_failure = jget_bool_local(s, "allow_failure", false)
+    let desc = jget_str_local(s, "desc", "")
+    if s.has("http_get") {
+        return run_http_step(s, params, index, dry_run, desc, allow_failure)
+    }
+    let timeout = step_timeout(spec, s)
+    let argv: [str] = []
+    if sudo {
+        argv.push("sudo")
+        if non_interactive {
+            argv.push("-n")
+        }
+    }
+    if s.has("shell") {
+        argv.push("sh")
+        argv.push("-c")
+        argv.push(substitute(str(s["shell"]), params))
+    } else {
+        let raw = s["argv"]
+        for i in range(len(raw)) {
+            argv.push(substitute(str(raw[i]), params))
+        }
+    }
+    let display = join_strings(argv, " ")
+    if dry_run {
+        return {"index": index, "cmd": display, "ok": true, "code": 0,
+                "allow_failure": allow_failure, "sudo": sudo, "desc": desc,
+                "duration_ms": 0, "output": "", "error": "", "dry_run": true}
+    }
+    let start = time_ms()
+    let r = try_capture(argv, timeout)
+    let ok = r["ok"] == true
+    let code = jget_int_local(r, "code", 0)
+    if not ok {
+        if not r.has("code") {
+            code = 127
+        }
+    }
+    let out = ""
+    if r.has("value") {
+        out = util.tail_lines(str(r["value"]), 60)
+    }
+    let err = ""
+    if not ok {
+        err = jget_str_local(r, "error", "step failed")
+    }
+    return {"index": index, "cmd": display, "ok": ok, "code": code,
+            "allow_failure": allow_failure, "sudo": sudo, "desc": desc,
+            "duration_ms": time_ms() - start, "output": out, "error": err}
+}
+
+# Run every step; stop at the first fatal failure (allow_failure steps keep
+# going). Returns the report; also appends a jsonl log line unless dry-run.
+fn run_automation(name: str, spec: json, cli_params: json, dry_run: bool, non_interactive: bool) -> json {
+    let started = time_ms()
+    let params = merged_params(spec, cli_params)
+    let steps = spec["steps"]
+    let results: [json] = []
+    let ok_all = true
+    let failures = 0
+    for i in range(len(steps)) {
+        let r = run_step(spec, steps[i], params, i, dry_run, non_interactive)
+        results.push(r)
+        if not (r["ok"] == true) {
+            if not (r["allow_failure"] == true) {
+                ok_all = false
+                failures = failures + 1
+                break
+            }
+        }
+    }
+    let summary = str(len(results)) + " of " + str(len(steps)) + " step(s) run, " + str(failures) + " failed"
+    if ok_all {
+        summary = "all " + str(len(steps)) + " step(s) succeeded"
+    }
+    let report: json = {
+        "name": name,
+        "ok": ok_all,
+        "dry_run": dry_run,
+        "ts": util.now_iso(),
+        "ts_ms": started,
+        "duration_ms": time_ms() - started,
+        "params": params,
+        "total_steps": len(steps),
+        "failures": failures,
+        "summary": summary,
+        "steps": results
+    }
+    if not dry_run {
+        util.log_run(name, report)
+    }
+    return report
+}

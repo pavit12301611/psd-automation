@@ -1,0 +1,4 @@
+from "lib/mod_c.psd" import nope
+
+fn main() {
+}

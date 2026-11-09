@@ -1,0 +1,4 @@
+fn main() {
+    let j = json_parse("[1, 2, 3]")
+    print(j[7])
+}

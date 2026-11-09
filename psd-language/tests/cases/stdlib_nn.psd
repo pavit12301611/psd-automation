@@ -1,0 +1,12 @@
+import "std/nn.psd" as nn
+
+fn main() {
+    let xs = [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]
+    let ys = [[0.0], [1.0], [1.0], [0.0]]
+    let trained = nn.train(nn.make_mlp([2, 4, 1], 7), xs, ys, 0.5, 4000)
+    let model = {"sizes": [2, 4, 1], "weights": trained["weights"], "biases": trained["biases"]}
+    print(trained["ok"], float(trained["loss"]) < 0.05)
+    for i in range(len(xs)) {
+        print(nn.predict(model, xs[i])[0] > 0.5)
+    }
+}

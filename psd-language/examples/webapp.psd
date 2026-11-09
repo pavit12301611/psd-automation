@@ -1,0 +1,106 @@
+# PSD Notes — a tiny web app demonstrating the built-in HTTP server.
+#
+# Run:    python3 -m psd run examples/webapp.psd
+# Open:   http://127.0.0.1:8080
+# Stop:   Ctrl-C
+#
+# Env:
+#   PSD_PORT=8080          port to bind (0 = ephemeral; the chosen port is
+#                          printed on the first line of stdout)
+#   PSD_SERVE_COUNT=0      stop after N requests (0 = serve forever; tests
+#                          use this to run the app deterministically)
+#
+# Security: binds 127.0.0.1 only (pass host "0.0.0.0" to http_listen to
+# expose it — don't, without an OS-level firewall/sandbox in front).
+# All dynamic output goes through html_escape().
+
+fn layout(title: str, body: str) -> str {
+    return "<!doctype html><html><head><title>" + html_escape(title) +
+    "</title><link rel=stylesheet href=/style.css></head><body>" +
+    body + "</body></html>"
+}
+
+fn render_notes(notes: [str]) -> str {
+    let items = ""
+    for i in range(len(notes)) {
+        items = items + "<li>" + html_escape(notes[i]) + "</li>"
+    }
+    if len(notes) == 0 {
+        items = "<li><em>no notes yet</em></li>"
+    }
+    return layout("PSD Notes",
+        "<h1>PSD Notes</h1><ul>" + items + "</ul>" +
+        "<form method=post action=/add>" +
+        "<input name=text placeholder=\"new note\" autofocus>" +
+        "<button>add</button></form>" +
+        "<p><a href=/search?q=ship>search 'ship'</a> &middot; " +
+        "<a href=/api/status>status json</a></p>")
+}
+
+fn form_value(body: str, key: str) -> str {
+    let parts = body.split("&")
+    for i in range(len(parts)) {
+        let kv = parts[i].split("=")
+        if len(kv) == 2 {
+            if kv[0] == key {
+                return url_decode(kv[1])
+            }
+        }
+    }
+    return ""
+}
+
+fn main() {
+    # NOTE: notes live in memory only and are lost when the server stops.
+    # Persistence (a file or database backend) is left as the next step;
+    # this demo intentionally keeps state in memory and says so.
+    let notes = ["<b>ship</b> PSD & \"delight\"", "build useful interfaces"]
+    let port = http_listen(int(env("PSD_PORT", "8080")))
+    print(str(port))
+    let served = 0
+    let limit = int(env("PSD_SERVE_COUNT", "0"))
+    while limit == 0 or served < limit {
+        let req = http_accept()
+        served = served + 1
+        if req["path"] == "/" {
+            http_reply(200, "text/html; charset=utf-8", render_notes(notes))
+        } elif req["path"] == "/add" and req["method"] == "POST" {
+            let text = form_value(str(req["body"]), "text")
+            if len(text) > 0 {
+                notes.push(text)
+            }
+            http_reply(200, "text/html; charset=utf-8", render_notes(notes))
+        } elif req["path"] == "/style.css" {
+            http_reply(200, "text/css",
+                "body{font-family:sans-serif;max-width:38rem;margin:3rem auto;" +
+                "padding:0 1rem;line-height:1.5}input{padding:.4rem}" +
+                "button{padding:.4rem .8rem}")
+        } elif req["path"] == "/api/status" {
+            http_reply(200, "application/json",
+                "{\"notes\": " + str(len(notes)) + ", \"ok\": true}")
+        } elif req["path"] == "/go" {
+            http_redirect("/")
+        } elif req["path"] == "/api/headers" {
+            let hv = ""
+            if req["headers"].has("x-test") {
+                hv = str(req["headers"]["x-test"])
+            }
+            http_reply(200, "application/json",
+                "{\"x-test\": \"" + hv + "\"}")
+        } elif req["path"] == "/search" {
+            let q = form_value(str(req["query"]), "q")
+            let hits = ""
+            for i in range(len(notes)) {
+                if notes[i].contains(q) {
+                    hits = hits + "<li>" + html_escape(notes[i]) + "</li>"
+                }
+            }
+            http_reply(200, "text/html; charset=utf-8",
+                layout("search",
+                "<h1>search: " + html_escape(q) + "</h1><ul>" + hits + "</ul>"))
+        } else {
+            http_reply(404, "text/html; charset=utf-8",
+                layout("404", "<h1>404</h1><p>no such page</p>"))
+        }
+    }
+}

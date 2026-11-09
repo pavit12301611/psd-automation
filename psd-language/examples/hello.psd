@@ -1,0 +1,7 @@
+# Hello, world!
+
+fn main() {
+    let name = "PSD"
+    print(f"Hello, {name}!")
+    print("2 + 2 =", 2 + 2)
+}

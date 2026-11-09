@@ -1,0 +1,11 @@
+import "std/numeric.psd" as num
+
+fn main() {
+    let a = [[1.0, 2.0], [3.0, 4.0]]
+    let b = num.matmul(a, num.identity(2))
+    print(b[1][0], num.dot_vec([1.0, 2.0], [3.0, 4.0]))
+    let t = num.transpose(a)
+    print(t[0][1], int(num.sigmoid_vec([0.0])[0] * 10))
+    let v = num.matvec(a, [1.0, 1.0])
+    print(v[0], v[1])
+}

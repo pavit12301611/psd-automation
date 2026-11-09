@@ -1,0 +1,15 @@
+{
+  "name": "disk-cleanup",
+  "description": "Safe housekeeping: vacuum the journal to 14 days, clear dnf cache, autoremove orphaned packages, drop unused flatpak runtimes, delete 30-day-old cached thumbnails. Nothing user-created is touched.",
+  "category": "cleanup",
+  "timeout": 600,
+  "requires_sudo": true,
+  "author": "builtin",
+  "steps": [
+    {"argv": ["journalctl", "--vacuum-time=14d"], "sudo": true, "allow_failure": true, "timeout": 120, "desc": "Shrink the system journal to 14 days."},
+    {"argv": ["dnf", "clean", "all"], "sudo": true, "allow_failure": true, "timeout": 300, "desc": "Remove all dnf caches and metadata."},
+    {"argv": ["dnf", "autoremove", "-y"], "sudo": true, "allow_failure": true, "timeout": 900, "desc": "Remove orphaned dependency packages."},
+    {"argv": ["flatpak", "uninstall", "--unused", "-y"], "allow_failure": true, "timeout": 600, "desc": "Remove unused flatpak runtimes (not an error if flatpak is missing)."},
+    {"shell": "find \"${HOME}/.cache/thumbnails\" -type f -atime +30 -delete", "allow_failure": true, "timeout": 180, "desc": "Delete cached thumbnails not viewed in 30+ days (they regenerate on demand)."}
+  ]
+}

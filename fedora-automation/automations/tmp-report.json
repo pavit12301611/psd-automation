@@ -1,0 +1,13 @@
+{
+  "name": "tmp-report",
+  "description": "Report-only cleanup candidates: largest /tmp files untouched for 7+ days, journal size on disk, packages dnf would autoremove. Deletes nothing — you review, then decide.",
+  "category": "cleanup",
+  "timeout": 300,
+  "requires_sudo": false,
+  "author": "builtin",
+  "steps": [
+    {"shell": "find /tmp -type f -mtime +7 -printf '%s\\t%p\\n' 2>/dev/null | sort -rn | head -25", "allow_failure": true, "timeout": 60, "desc": "Files in /tmp older than 7 days by size. Review, then delete manually if wanted."},
+    {"argv": ["journalctl", "--disk-usage"], "allow_failure": true, "timeout": 15, "desc": "Space the system journal occupies."},
+    {"argv": ["dnf", "autoremove", "--assumeno"], "allow_failure": true, "timeout": 300, "desc": "Prints the autoremove transaction dnf would perform; changes nothing."}
+  ]
+}

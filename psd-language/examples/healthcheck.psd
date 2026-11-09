@@ -1,0 +1,34 @@
+# PSD health check: poll a list of targets and write a json report.
+#
+# Every step is recoverable: a down target is an error envelope, not a crash,
+# and every side effect goes through argv-based calls (no shell).
+# Requires `curl` on PATH (the PSD HTTP client shells out to curl).
+#
+# This works offline: targets on unused ports refuse connections immediately
+# and try_http_get reports the failure as data.
+#
+# Run:  psd run examples/healthcheck.psd
+
+fn main() {
+    let targets = ["http://127.0.0.1:1/", "http://127.0.0.1:2/", "http://127.0.0.1:3/"]
+    let results: [json] = []
+    for t in targets {
+        let r = try_http_get(t)
+        let entry: json = {"target": t, "ok": r["ok"]}
+        if r["ok"] {
+            entry["body"] = str(r["value"])
+        } else {
+            entry["error"] = str(r["error"])
+        }
+        push(results, entry)
+    }
+    let report: json = {"checked_at": capture(["date"]).trim(), "targets": results}
+
+    let saved = try_write_file("/tmp/psd_health_report.json", json_encode(report))
+    if saved["ok"] {
+        print("wrote /tmp/psd_health_report.json")
+    } else {
+        print("cannot write report: " + str(saved["error"]))
+    }
+    print(json_encode(report))
+}

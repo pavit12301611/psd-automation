@@ -1,0 +1,9 @@
+import "lib/mathlib.psd" as m
+from "lib/mathlib.psd" import double
+
+fn main() {
+    print(m.add(2, 3))          # 5
+    print(double(21))           # 42
+    print(m.double(5))          # 10
+    print(m.describe())         # internal helper
+}

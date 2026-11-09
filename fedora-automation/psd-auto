@@ -1,0 +1,42 @@
+#!/bin/sh
+# psd-auto launcher — works from the git checkout (dev) and from the
+# installed layout (~/.local/share/psd-auto + ~/.local/bin/psd-auto).
+# Sets PSD_AUTO_ROOT (where the bundled `automations/` specs live) and
+# PSD_AUTO_BIN (absolute path of this launcher, used by `psd-auto schedule`).
+set -eu
+
+SELF=$(readlink -f -- "$0" 2>/dev/null || printf '%s\n' "$0")
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)
+
+if [ -n "${PSD_AUTO_ROOT:-}" ]; then
+    ROOT="$PSD_AUTO_ROOT"
+else
+    ROOT="$SELF_DIR"
+fi
+
+export PSD_AUTO_ROOT="$ROOT"
+export PSD_AUTO_BIN="$SELF"
+
+# 1) native binary built by install.sh / `psd build`
+BIN="$ROOT/build/psd-auto"
+if [ -x "$BIN" ]; then
+    exec "$BIN" "$@"
+fi
+
+# 2) PSD toolchain from the surrounding checkout (repo layout:
+#    <repo>/fedora-automation/psd-auto + <repo>/psd-language + <repo>/.venv)
+REPO_ROOT="$ROOT/.."
+if [ -d "$REPO_ROOT/psd-language" ] && [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+    export PYTHONPATH="$REPO_ROOT/psd-language"
+    exec "$REPO_ROOT/.venv/bin/python" -m psd run "$ROOT/src/main.psd" -- "$@"
+fi
+
+# 3) toolchain already on PYTHONPATH
+if [ -n "${PYTHONPATH:-}" ]; then
+    exec python3 -m psd run "$ROOT/src/main.psd" -- "$@"
+fi
+
+echo "psd-auto: could not find the PSD toolchain." >&2
+echo "  dev checkout: run fedora-automation/install.sh, or" >&2
+echo "  export PYTHONPATH=<repo>/psd-language" >&2
+exit 127

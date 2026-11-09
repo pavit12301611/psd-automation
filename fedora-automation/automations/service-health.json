@@ -1,0 +1,15 @@
+{
+  "name": "service-health",
+  "description": "systemd and resource snapshot: overall system state, failed system and user units, uptime, memory. Read-only.",
+  "category": "system",
+  "timeout": 60,
+  "requires_sudo": false,
+  "author": "builtin",
+  "steps": [
+    {"argv": ["systemctl", "is-system-running"], "allow_failure": true, "timeout": 15, "desc": "One-word answer: running, degraded, maintenance, or starting."},
+    {"argv": ["systemctl", "--failed", "--no-legend", "--no-pager"], "allow_failure": true, "timeout": 15, "desc": "Failed system units (empty output = all good)."},
+    {"argv": ["systemctl", "--user", "--failed", "--no-legend", "--no-pager"], "allow_failure": true, "timeout": 15, "desc": "Failed user units."},
+    {"argv": ["uptime"], "timeout": 10, "desc": "Uptime and load averages."},
+    {"argv": ["free", "-m"], "timeout": 10, "desc": "Memory and swap in MiB."}
+  ]
+}

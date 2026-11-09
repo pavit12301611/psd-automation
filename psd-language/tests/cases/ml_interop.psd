@@ -1,0 +1,53 @@
+import "std/ml.psd" as ml
+import "std/math.psd" as math
+
+# Deterministic end-to-end ML interop: PSD writes json data, runs an
+# external trainer (argv, no shell, timeout), loads and validates the model,
+# then predicts. Offline-safe: the trainer is this repo's stdlib script.
+
+fn main() {
+    let data = "[[1, 3], [2, 5], [3, 7], [4, 9], [5, 11]]"
+    let data_path = "/tmp/psd_interop_test_data.json"
+    let model_path = "/tmp/psd_interop_test_model.json"
+
+    let saved = try_write_file(data_path, data)
+    if saved["ok"] {
+    } else {
+        print("BAD write: " + str(saved["error"]))
+        exit(1)
+    }
+
+    let ran = try_capture(["python3", "examples/lib/train_ols.py",
+                           data_path, model_path], 30)
+    if ran["ok"] {
+    } else {
+        print("BAD trainer: " + str(ran["error"]) + " code=" + str(ran["code"]))
+        exit(1)
+    }
+
+    let m = ml.load(model_path)
+    if m["ok"] {
+    } else {
+        print("BAD load: " + str(m["error"]))
+        exit(1)
+    }
+    let model = m["value"]
+
+    if model.has("w") && model.has("b") {
+    } else {
+        print("BAD model: missing w/b")
+        exit(1)
+    }
+
+    if math.approx(float(model["w"]), 2.0, 0.001) {
+        print("interop w ok")
+    } else {
+        print("BAD w: " + str(model["w"]))
+    }
+    if math.approx(ml.predict(model, 6.0), 13.0, 0.01) {
+        print("interop predict ok")
+    } else {
+        print("BAD predict: " + str(ml.predict(model, 6.0)))
+    }
+    print("trainer: " + str(model["note"]))
+}

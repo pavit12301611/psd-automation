@@ -1,0 +1,15 @@
+fn add(a: int, b: int) -> int {
+    return a + b
+}
+
+fn double(x: int) -> int {
+    return add(x, x)
+}
+
+fn private_note() -> str {
+    return "internal helper"
+}
+
+fn describe() -> str {
+    return private_note()
+}

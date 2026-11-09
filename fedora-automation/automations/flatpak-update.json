@@ -1,0 +1,12 @@
+{
+  "name": "flatpak-update",
+  "description": "Update all flatpak apps and runtimes, then remove unused runtimes. No root needed.",
+  "category": "maintenance",
+  "timeout": 900,
+  "requires_sudo": false,
+  "author": "builtin",
+  "steps": [
+    {"argv": ["flatpak", "update", "-y"], "timeout": 1800, "desc": "Apply all flatpak updates."},
+    {"argv": ["flatpak", "uninstall", "--unused", "-y"], "allow_failure": true, "timeout": 600, "desc": "Remove runtimes no longer needed by any app."}
+  ]
+}

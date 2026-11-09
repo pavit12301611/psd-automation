@@ -1,0 +1,24 @@
+# Files, shell, env
+
+fn main() {
+    # files
+    let path = "/tmp/psd_test_file.txt"
+    write_file(path, "line1\n")
+    append_file(path, "line2\n")
+    print(read_file(path))
+    print(exists(path), exists("/tmp/definitely_missing_psd.txt"))
+    print(read_file(path).trim().split("\n").len())
+
+    # process: argv-based (no shell) and explicit shell
+    let n = capture(["echo", "hello", "from", "shell"])
+    print(n)
+    let code = run(["true"])
+    print(code)
+    let up = capture_shell("echo abc | tr a-z A-Z")
+    print(up)
+    print(shell("echo via shell") == 0)
+
+    # env
+    print(env("PATH").len() > 0)
+    print(env("PSD_MISSING_VAR", "fallback"))
+}

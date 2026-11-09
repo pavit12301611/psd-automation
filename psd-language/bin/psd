@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Convenience launcher for the PSD toolchain.
+# Usage: bin/psd run|build|check|emit-llvm file.psd
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -x "$ROOT/.venv/bin/python" ]; then
+    exec "$ROOT/.venv/bin/python" -m psd "$@"
+else
+    exec python3 -m psd "$@"
+fi

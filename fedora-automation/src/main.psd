@@ -1,0 +1,1075 @@
+# psd-auto — Fedora 45 workstation autopilot.
+#
+# Usage: psd-auto <command> [options]  (see `psd-auto help`)
+#
+# Exit codes: 0 ok · 1 automation failed · 2 usage error · 3 not found · 4 validation error
+
+import "util.psd" as util
+import "spec.psd" as spec
+import "registry.psd" as registry
+import "engine.psd" as engine
+import "native.psd" as native
+import "ai.psd" as ai
+import "webui.psd" as webui
+import "author.psd" as author
+
+fn version() -> str {
+    return "1.0.0"
+}
+
+# ---------------------------------------------------- flag parsing ----
+
+fn has_flag(flags: [str], name: str) -> bool {
+    for f in flags {
+        if f == name {
+            return true
+        }
+    }
+    return false
+}
+
+fn flag_value(flags: [str], name: str) -> str {
+    for i in range(len(flags)) {
+        if flags[i] == name {
+            if i + 1 < len(flags) {
+                return flags[i + 1]
+            }
+            return ""
+        }
+    }
+    return ""
+}
+
+fn collect_params(flags: [str]) -> json {
+    let out: json = {}
+    for i in range(len(flags)) {
+        if flags[i] == "--param" and i + 1 < len(flags) {
+            let kv = flags[i + 1].split("=")
+            if len(kv) >= 2 {
+                out[kv[0].trim()] = author.join_from2(kv, 1, "=").trim()
+            }
+        }
+    }
+    return out
+}
+
+fn positionals(flags: [str]) -> [str] {
+    let out: [str] = []
+    let i = 0
+    while i < len(flags) {
+        let f = flags[i]
+        if f.starts_with("-") {
+            # skip flag and (for known value-taking flags) their value
+            if f == "--param" or f == "--tail" or f == "--port" or f == "--host" or f == "--token" or f == "--ai" or f == "--file" or f == "--param-file" {
+                i = i + 2
+            } else {
+                i = i + 1
+            }
+            continue
+        }
+        out.push(f)
+        i = i + 1
+    }
+    return out
+}
+
+# --------------------------------------------------- shared helpers ----
+
+fn all_specs() -> json {
+    let loaded = registry.load_all()
+    let specs = loaded["specs"]
+    for s in native.native_specs() {
+        specs.push(s)
+    }
+    return {"specs": specs, "warnings": loaded["warnings"]}
+}
+
+fn find_any(specs: json, name: str) -> json {
+    for s in specs {
+        if str(s["name"]) == name {
+            return s
+        }
+    }
+    let missing: json = {"__missing__": true}
+    return missing
+}
+
+fn print_warnings(warnings: json) {
+    for w in warnings {
+        print("warning: " + str(w))
+    }
+}
+
+fn output_report(report: json, json_out: bool) {
+    if json_out {
+        print(json_encode(report))
+        return
+    }
+    let dry = false
+    if report.has("dry_run") {
+        dry = report["dry_run"] == true
+    }
+    print("")
+    let dry_suffix = ""
+    if dry {
+        dry_suffix = " (dry run)"
+    }
+    print("== " + util.jget_str(report, "name", "automation") + dry_suffix + " ==")
+    let steps = report["steps"]
+    for i in range(len(steps)) {
+        let s = steps[i]
+        let sok = s["ok"] == true
+        let marker = "[ ok ]"
+        if not sok {
+            marker = "[FAIL]"
+            if s["allow_failure"] == true {
+                marker = "[warn]"
+            }
+        }
+        print(marker + " step " + str(i + 1) + ": " + util.jget_str(s, "cmd", ""))
+        let out = util.jget_str(s, "output", "")
+        if len(out) > 0 {
+            let lines = out.split("\n")
+            let lim = 40
+            if len(lines) < 40 {
+                lim = len(lines)
+            }
+            for j in range(lim) {
+                print("       " + lines[j])
+            }
+        }
+        let err = util.jget_str(s, "error", "")
+        if len(err) > 0 {
+            print("       error: " + err)
+        }
+    }
+    print("")
+    print("== " + util.jget_str(report, "summary", "") + " · " + str(util.jget_int(report, "duration_ms", 0)) + " ms ==")
+}
+
+fn report_exit(report: json) -> int {
+    if report["ok"] == true {
+        return 0
+    }
+    return 1
+}
+
+fn err_json(msg: str) {
+    print(json_encode({"ok": false, "error": msg}))
+}
+
+# ------------------------------------------------------------ list ----
+
+fn cmd_list(flags: [str]) {
+    let loaded = all_specs()
+    print_warnings(loaded["warnings"])
+    let specs = loaded["specs"]
+    let json_out = has_flag(flags, "--json")
+    if json_out {
+        let out: [json] = []
+        for s in specs {
+            let lr = util.last_run(str(s["name"]))
+            let entry: json = {"name": str(s["name"]), "description": util.jget_str(s, "description", ""), "category": util.jget_str(s, "category", "custom"), "author": util.jget_str(s, "author", "user"), "source": util.jget_str(s, "_source", "user"), "requires_sudo": engine.spec_requires_sudo(s)}
+            if lr.has("ts_ms") {
+                entry["last_run"] = lr
+            }
+            out.push(entry)
+        }
+        print(json_encode(out))
+        return
+    }
+    print("")
+    print("psd-auto — Fedora 45 workstation automations")
+    print("")
+    print("NAME                CAT          SUDO  LAST RUN  DESCRIPTION")
+    for s in specs {
+        let name = str(s["name"])
+        let cat = util.jget_str(s, "category", "custom")
+        let sudo = "-"
+        if engine.spec_requires_sudo(s) {
+            sudo = "yes"
+        }
+        let last = "never"
+        let lr = util.last_run(name)
+        if lr.has("ts_ms") {
+            if lr["ok"] == true {
+                last = "ok"
+            } else {
+                last = "FAIL"
+            }
+        }
+        let desc = util.jget_str(s, "description", "")
+        print(pad(name, 20) + pad(cat, 13) + pad(sudo, 6) + pad(last, 10) + desc)
+    }
+    print("")
+    print("run one: psd-auto run <name> [--dry-run]   ·   add yours: psd-auto add --ai \"what you want\"  or  psd-auto add")
+}
+
+fn pad(s: str, width: int) -> str {
+    let out = s
+    while len(out) < width {
+        out = out + " "
+    }
+    return out
+}
+
+# ------------------------------------------------------------ info ----
+
+fn cmd_info(flags: [str]) {
+    let pos = positionals(flags)
+    if len(pos) < 1 {
+        print("usage: psd-auto info <name>")
+        exit(2)
+    }
+    let name = pos[0]
+    let loaded = all_specs()
+    let s = find_any(loaded["specs"], name)
+    if s.has("__missing__") {
+        print("error: no automation named '" + name + "'  (see psd-auto list)")
+        exit(3)
+    }
+    print("name:        " + str(s["name"]))
+    print("description: " + util.jget_str(s, "description", ""))
+    print("category:    " + util.jget_str(s, "category", "custom"))
+    print("author:      " + util.jget_str(s, "author", "user"))
+    print("source:      " + util.jget_str(s, "_path", "native (built into psd-auto)"))
+    let sudo = "no"
+    if engine.spec_requires_sudo(s) {
+        sudo = "yes (steps will run with sudo)"
+    }
+    print("requires_sudo: " + sudo)
+    if s.has("params") {
+        print("params:")
+        for k in s["params"].keys() {
+            print("  " + k + " = " + str(s["params"][k]))
+        }
+    }
+    print("spec (json):")
+    print(json_encode(s))
+    print("")
+    print("recent runs:")
+    let lines = util.read_log_lines(name)
+    if len(lines) == 0 {
+        print("  (never run)")
+    } else {
+        let start = 0
+        if len(lines) > 5 {
+            start = len(lines) - 5
+        }
+        for i in range(start, len(lines)) {
+            let r = try_json_parse(lines[i])
+            if r["ok"] == true {
+                let e = r["value"]
+                let ok = "ok"
+                if e["ok"] == false {
+                    ok = "FAIL"
+                }
+                print("  " + util.jget_str(e, "ts", "") + "  " + ok + "  " + util.jget_str(e, "summary", ""))
+            }
+        }
+    }
+}
+
+# ------------------------------------------------------------- run ----
+
+fn cmd_run(flags: [str]) {
+    let json_out = has_flag(flags, "--json")
+    let dry = has_flag(flags, "--dry-run")
+    let yes = has_flag(flags, "--yes") or has_flag(flags, "-y")
+    let non_interactive = has_flag(flags, "--non-interactive")
+    let force = has_flag(flags, "--force")
+    let pos = positionals(flags)
+    if len(pos) < 1 {
+        print("usage: psd-auto run <name> [--dry-run] [--param key=value]... [--yes] [--non-interactive] [--json]")
+        exit(2)
+    }
+    let name = pos[0]
+    let loaded = all_specs()
+    print_warnings(loaded["warnings"])
+    let s = find_any(loaded["specs"], name)
+    if s.has("__missing__") {
+        if json_out {
+            err_json("no automation named '" + name + "'")
+        } else {
+            print("error: no automation named '" + name + "'  (see psd-auto list)")
+        }
+        exit(3)
+    }
+    if registry.is_native(s) {
+        if dry {
+            let plan = "native automation '" + name + "' would execute now (read-only checks; nothing is modified)"
+            if json_out {
+                err_json(plan)
+            } else {
+                print(plan)
+            }
+            exit(0)
+        }
+        let report = native.run_native(name)
+        util.log_run(name, report)
+        output_report(report, json_out)
+        exit(report_exit(report))
+    }
+    let check = spec.validate_spec(s)
+    if check["ok"] == false {
+        print("error: spec for '" + name + "' failed validation:")
+        for e in check["errors"] {
+            print("  - " + str(e))
+        }
+        exit(4)
+    }
+    if engine.spec_requires_sudo(s) and not dry and not yes {
+        print("WARNING: this automation runs steps as root via sudo.")
+        let ans = read_line("Proceed? [y/N] ").trim().lower()
+        if ans != "y" and ans != "yes" {
+            print("aborted (use --yes to run without prompting)")
+            exit(2)
+        }
+    }
+    if force {
+        util.release_lock(name)
+    }
+    let lock = util.acquire_lock(name)
+    if lock["ok"] == false {
+        print("error: " + str(lock["error"]))
+        print("       (use --force to override a stale lock)")
+        exit(1)
+    }
+    let params = collect_params(flags)
+    let report = engine.run_automation(name, s, params, dry, non_interactive)
+    util.release_lock(name)
+    output_report(report, json_out)
+    exit(report_exit(report))
+}
+
+# ------------------------------------------------------------- add ----
+
+fn clean_spec(s: json) -> json {
+    let out: json = {}
+    out["name"] = str(s["name"])
+    out["description"] = str(s["description"])
+    out["category"] = util.jget_str(s, "category", "custom")
+    out["timeout"] = util.jget_int(s, "timeout", 600)
+    out["author"] = util.jget_str(s, "author", "user")
+    if s.has("params") {
+        out["params"] = s["params"]
+    }
+    if s.has("requires_sudo") {
+        out["requires_sudo"] = s["requires_sudo"]
+    }
+    out["steps"] = s["steps"]
+    return out
+}
+
+fn save_spec_interactive(candidate: json, force: bool) -> json {
+    let name = str(candidate["name"])
+    let check = spec.validate_spec(candidate)
+    if check["ok"] == false {
+        let msg = "validation failed:\n"
+        for e in check["errors"] {
+            msg = msg + "  - " + str(e) + "\n"
+        }
+        return {"ok": false, "error": msg}
+    }
+    util.ensure_dirs()
+    let path = util.user_automations_dir() + "/" + name + ".json"
+    if exists(path) and not force {
+        return {"ok": false, "error": "automation '" + name + "' already exists (use --force to overwrite)"}
+    }
+    let clean = clean_spec(candidate)
+    write_file(path, json_encode(clean))
+    return {"ok": true, "path": path, "spec": clean}
+}
+
+fn add_from_ai(description: str, force: bool, json_out: bool) {
+    if ai.ai_configured() == false {
+        print(ai.setup_help())
+        exit(2)
+    }
+    let loaded = all_specs()
+    let names: [str] = []
+    for s in loaded["specs"] {
+        names.push(str(s["name"]))
+    }
+    print("asking " + ai.ai_model() + " to write the automation...")
+    let generated = ai.generate_automation(description, names)
+    if generated["ok"] == false {
+        print("AI generation failed:")
+        print(str(generated["error"]))
+        exit(1)
+    }
+    let candidate = generated["spec"]
+    let nm = str(candidate["name"])
+    print("")
+    print("--- generated spec ---")
+    print(json_encode(candidate))
+    print("----------------------")
+    print(spec.spec_summary(candidate))
+    let saved = save_spec_interactive(candidate, force)
+    if saved["ok"] == true {
+        print("saved to " + str(saved["path"]))
+        print("next: psd-auto run " + nm + " --dry-run   (preview)  ·   psd-auto run " + nm)
+        return
+    }
+    # name collision: uniquify once with a numeric suffix
+    if str(saved["error"]).contains("already exists") {
+        candidate["name"] = nm + "-" + str(rand_int(90) + 10)
+        let saved2 = save_spec_interactive(candidate, force)
+        if saved2["ok"] == true {
+            print("name '" + nm + "' was taken; saved as " + str(saved2["path"]))
+            return
+        }
+        print("error: " + str(saved2["error"]))
+        exit(1)
+    }
+    print("error: " + str(saved["error"]))
+    exit(1)
+}
+
+fn add_from_file(path: str, force: bool) {
+    let r = try_read_file(path)
+    if r["ok"] == false {
+        print("error: cannot read " + path)
+        exit(2)
+    }
+    let parsed = try_json_parse(str(r["value"]))
+    if parsed["ok"] == false {
+        print("error: " + path + " is not valid json")
+        exit(4)
+    }
+    let candidate = parsed["value"]
+    candidate["author"] = "user"
+    let saved = save_spec_interactive(candidate, force)
+    if saved["ok"] == false {
+        print("error: " + str(saved["error"]))
+        exit(4)
+    }
+    print("saved to " + str(saved["path"]))
+}
+
+fn add_wizard() {
+    print("psd-auto · new automation wizard")
+    print("(everything is validated and previewed before saving; nothing is published)")
+    print("")
+    let name = read_line("name (slug, e.g. weekly-cleanup): ").trim()
+    if len(name) == 0 {
+        print("error: empty name — interactive wizard needs a terminal.")
+        print("non-interactive alternatives:")
+        print("  psd-auto add --ai \"describe what you want\"")
+        print("  psd-auto add --file my-automation.json")
+        exit(2)
+    }
+    let description = read_line("one-line description: ").trim()
+    let category = read_line("category [system|security|cleanup|backup|network|dev|maintenance|custom] (custom): ").trim()
+    if len(category) == 0 {
+        category = "custom"
+    }
+    print("")
+    print("steps — one per line, empty line to finish:")
+    print("  argv: dnf upgrade --refresh -y [sudo]     # run a command (argv, safe)")
+    print("  argv: dnf check-update [ok]               # [ok] tolerates failure")
+    print("  shell: journalctl --vacuum-time=14d [sudo]")
+    print("  http: https://fedoraproject.org/ = Fedora # optional substring assertion")
+    let steps_text = ""
+    while true {
+        let line = read_line("step> ")
+        if len(line.trim()) == 0 {
+            break
+        }
+        steps_text = steps_text + line + "\n"
+    }
+    let parsed = author.parse_steps_text(steps_text)
+    if len(parsed["errors"]) > 0 {
+        print("step errors:")
+        for e in parsed["errors"] {
+            print("  - " + str(e))
+        }
+        exit(4)
+    }
+    let timeout_text = read_line("per-step timeout seconds (600): ").trim()
+    let timeout = 600
+    let tr = try_int(timeout_text)
+    if tr["ok"] == true {
+        timeout = int(tr["value"])
+    }
+    let candidate: json = {"name": name, "description": description, "category": category, "timeout": timeout, "author": "user", "steps": parsed["steps"]}
+    print("")
+    print("--- preview ---")
+    print(json_encode(candidate))
+    let confirm = read_line("save? [y/N] ").trim().lower()
+    if confirm != "y" and confirm != "yes" {
+        print("discarded, nothing saved")
+        exit(2)
+    }
+    let saved = save_spec_interactive(candidate, false)
+    if saved["ok"] == false {
+        print("error: " + str(saved["error"]))
+        exit(4)
+    }
+    print("saved to " + str(saved["path"]))
+}
+
+fn cmd_add(flags: [str]) {
+    let force = has_flag(flags, "--force")
+    let ai_desc = flag_value(flags, "--ai")
+    let file_path = flag_value(flags, "--file")
+    let json_out = has_flag(flags, "--json")
+    if len(ai_desc) > 0 {
+        add_from_ai(ai_desc, force, json_out)
+        return
+    }
+    if len(file_path) > 0 {
+        add_from_file(file_path, force)
+        return
+    }
+    add_wizard()
+}
+
+# ---------------------------------------------------------- remove ----
+
+fn cmd_remove(flags: [str]) {
+    let yes = has_flag(flags, "--yes") or has_flag(flags, "-y")
+    let pos = positionals(flags)
+    if len(pos) < 1 {
+        print("usage: psd-auto remove <name> [--yes]")
+        exit(2)
+    }
+    let name = pos[0]
+    if spec.valid_name(name) == false {
+        print("error: invalid automation name")
+        exit(2)
+    }
+    let path = util.user_automations_dir() + "/" + name + ".json"
+    if not exists(path) {
+        print("error: no user automation '" + name + "' (built-ins cannot be removed)")
+        exit(3)
+    }
+    if not yes {
+        let ans = read_line("delete '" + name + "' (" + path + ")? [y/N] ").trim().lower()
+        if ans != "y" and ans != "yes" {
+            print("aborted")
+            exit(2)
+        }
+    }
+    delete(path)
+    print("removed " + path)
+}
+
+# ----------------------------------------------------------- logs ----
+
+fn cmd_logs(flags: [str]) {
+    let pos = positionals(flags)
+    let tail_text = flag_value(flags, "--tail")
+    let tail = 15
+    let tr = try_int(tail_text)
+    if tr["ok"] == true {
+        tail = int(tr["value"])
+    }
+    if len(pos) >= 1 {
+        let name = pos[0]
+        let lines = util.read_log_lines(name)
+        if len(lines) == 0 {
+            print("(no runs logged for '" + name + "')")
+            return
+        }
+        let start = 0
+        if len(lines) > tail {
+            start = len(lines) - tail
+        }
+        for i in range(start, len(lines)) {
+            print_log_line(lines[i])
+        }
+        return
+    }
+    let recent = util.recent_logs(tail)
+    if len(recent) == 0 {
+        print("(no runs logged yet)")
+        return
+    }
+    for e in recent {
+        let ok = "ok"
+        if e["ok"] == false {
+            ok = "FAIL"
+        }
+        print(util.jget_str(e, "ts", "") + "  " + pad(util.jget_str(e, "name", "?"), 22) + pad(ok, 6) + util.jget_str(e, "summary", ""))
+    }
+}
+
+fn print_log_line(line: str) {
+    let r = try_json_parse(line)
+    if r["ok"] == false {
+        print("(corrupt entry) " + line)
+        return
+    }
+    let e = r["value"]
+    let ok = "ok"
+    if e["ok"] == false {
+        ok = "FAIL"
+    }
+    print(util.jget_str(e, "ts", "") + "  " + pad(ok, 6) + util.jget_str(e, "summary", "") + " · " + str(util.jget_int(e, "duration_ms", 0)) + " ms")
+}
+
+# --------------------------------------------------------- status ----
+
+fn cmd_status(flags: [str]) {
+    print(util.machine_context())
+    print("")
+    print("AI:          " + ai_status_line())
+    print("logs:        " + util.logs_dir())
+    print("user specs:  " + util.user_automations_dir())
+    let loaded = all_specs()
+    print("automations: " + str(len(loaded["specs"])) + " total (" + count_source(loaded["specs"], "user") + " user, " + count_source(loaded["specs"], "builtin") + " builtin)")
+    print("")
+    print("recent runs:")
+    cmd_logs(["--tail", "5"])
+}
+
+fn ai_status_line() -> str {
+    if ai.ai_configured() {
+        return "configured (" + ai.ai_model() + " @ " + ai.ai_base_url() + ")"
+    }
+    return "not configured — set PSD_AI_API_KEY (psd-auto help ai)"
+}
+
+fn count_source(specs: json, source: str) -> str {
+    let n = 0
+    for s in specs {
+        if util.jget_str(s, "_source", "user") == source {
+            n = n + 1
+        }
+    }
+    return str(n)
+}
+# ------------------------------------------------------------- web ----
+
+fn cmd_web(flags: [str]) {
+    let port_text = flag_value(flags, "--port")
+    let port = 8099
+    let pr = try_int(port_text)
+    if pr["ok"] == true {
+        port = int(pr["value"])
+    }
+    if port < 1 or port > 65535 {
+        print("error: --port must be 1-65535")
+        exit(2)
+    }
+    let host = flag_value(flags, "--host")
+    if len(host) == 0 {
+        host = env("PSD_AUTO_WEB_HOST", "127.0.0.1")
+    }
+    if not valid_host(host) {
+        print("error: --host must be an IPv4 address (got '" + host + "')")
+        exit(2)
+    }
+    let token = flag_value(flags, "--token")
+    if len(token) == 0 {
+        token = env("PSD_AUTO_WEB_TOKEN", "")
+    }
+    if host != "127.0.0.1" and len(token) == 0 {
+        print("note: binding to " + host + " requires a token; one will be generated")
+    }
+    webui.serve(port, host, token)
+}
+
+fn valid_host(s: str) -> bool {
+    # IPv4 dotted quad, digits and dots only, correct octet count
+    let parts = s.split(".")
+    if len(parts) != 4 {
+        return false
+    }
+    for p in parts {
+        let r = try_int(p)
+        if r["ok"] == false {
+            return false
+        }
+        let n = int(r["value"])
+        if n < 0 or n > 255 {
+            return false
+        }
+        # reject leading zeros / empty pieces (try_int tolerated them)
+        if len(p) == 0 {
+            return false
+        }
+    }
+    return true
+}
+
+# ------------------------------------------------------------- ask ----
+
+fn cmd_ask(flags: [str]) {
+    let pos = positionals(flags)
+    if len(pos) < 1 {
+        print("usage: psd-auto ask \"your question\"")
+        exit(2)
+    }
+    let question = author.join_from2(pos, 0, " ")
+    if ai.ai_configured() == false {
+        print(ai.setup_help())
+        exit(2)
+    }
+    let context = util.machine_context()
+    let r = ai.ask(question, context)
+    if r["ok"] == false {
+        print("AI error: " + str(r["error"]))
+        exit(1)
+    }
+    print(str(r["text"]))
+}
+
+fn cmd_explain(flags: [str]) {
+    let pos = positionals(flags)
+    if len(pos) < 1 {
+        print("usage: psd-auto explain <name>")
+        exit(2)
+    }
+    let name = pos[0]
+    if ai.ai_configured() == false {
+        print(ai.setup_help())
+        exit(2)
+    }
+    let lines = util.read_log_lines(name)
+    if len(lines) == 0 {
+        print("'" + name + "' has no recorded runs yet")
+        exit(3)
+    }
+    let start = 0
+    if len(lines) > 3 {
+        start = len(lines) - 3
+    }
+    let context = ""
+    for i in range(start, len(lines)) {
+        context = context + lines[i] + "\n"
+    }
+    let r = ai.explain_failure(name, context)
+    if r["ok"] == false {
+        print("AI error: " + str(r["error"]))
+        exit(1)
+    }
+    print(str(r["text"]))
+}
+
+# --------------------------------------------------------- doctor ----
+
+fn cmd_doctor(flags: [str]) {
+    let report = native.run_native("doctor")
+    util.log_run("doctor", report)
+    output_report(report, has_flag(flags, "--json"))
+    exit(0)
+}
+
+# -------------------------------------------------------- schedule ----
+
+fn valid_calendar(s: str) -> bool {
+    let n = len(s)
+    if n < 1 or n > 80 {
+        return false
+    }
+    if s.contains("\n") or s.contains("\r") or s.contains("[") or s.contains("]") or s.contains("=") {
+        return false
+    }
+    # strip the allowed set; must be empty afterwards
+    let out = strip_allowed_calendar(s)
+    return len(out) == 0
+}
+
+fn strip_allowed_calendar(s: str) -> str {
+    let out = s.replace(" ", "").replace(",", "").replace(":", "").replace("*", "").replace("-", "").replace("/", "")
+    out = out.replace("0", "").replace("1", "").replace("2", "").replace("3", "").replace("4", "")
+    out = out.replace("5", "").replace("6", "").replace("7", "").replace("8", "").replace("9", "")
+    out = out.replace("a", "").replace("b", "").replace("c", "").replace("d", "").replace("e", "")
+    out = out.replace("f", "").replace("g", "").replace("h", "").replace("i", "").replace("j", "")
+    out = out.replace("k", "").replace("l", "").replace("m", "").replace("n", "").replace("o", "")
+    out = out.replace("p", "").replace("q", "").replace("r", "").replace("s", "").replace("t", "")
+    out = out.replace("u", "").replace("v", "").replace("w", "").replace("x", "").replace("y", "").replace("z", "")
+    out = out.replace("A", "").replace("B", "").replace("C", "").replace("D", "").replace("E", "")
+    out = out.replace("F", "").replace("G", "").replace("H", "").replace("I", "").replace("J", "")
+    out = out.replace("K", "").replace("L", "").replace("M", "").replace("N", "").replace("O", "")
+    out = out.replace("P", "").replace("Q", "").replace("R", "").replace("S", "").replace("T", "")
+    out = out.replace("U", "").replace("V", "").replace("W", "").replace("X", "").replace("Y", "").replace("Z", "")
+    return out
+}
+
+fn systemd_user_dir() -> str {
+    let base = env("XDG_CONFIG_HOME", "")
+    if len(base) == 0 {
+        base = util.home_dir() + "/.config"
+    }
+    return base + "/systemd/user"
+}
+
+fn launcher_path() -> str {
+    let explicit = env("PSD_AUTO_BIN", "")
+    if len(explicit) > 0 {
+        return explicit
+    }
+    return util.home_dir() + "/.local/bin/psd-auto"
+}
+
+fn cmd_schedule(flags: [str]) {
+    let pos = positionals(flags)
+    if len(pos) < 2 {
+        print("usage: psd-auto schedule <name> \"<on-calendar>\"")
+        print("examples: psd-auto schedule system-update weekly")
+        print("          psd-auto schedule backup-home \"*-*-* 03:30:00\"")
+        print("          psd-auto schedule repo-status \"Mon *-*-* 09:00:00\"")
+        exit(2)
+    }
+    let name = pos[0]
+    let calendar = author.join_from2(pos, 1, " ")
+    let loaded = all_specs()
+    let s = find_any(loaded["specs"], name)
+    if s.has("__missing__") {
+        print("error: no automation named '" + name + "'")
+        exit(3)
+    }
+    if valid_calendar(calendar) == false {
+        print("error: invalid OnCalendar expression (allowed: letters, digits, space , : * - /)")
+        exit(2)
+    }
+    ensure_dir(systemd_user_dir())
+    let dir = systemd_user_dir()
+    let service_path = dir + "/psd-auto-" + name + ".service"
+    let timer_path = dir + "/psd-auto-" + name + ".timer"
+    let bin = launcher_path()
+    let service = "[Unit]\nDescription=psd-auto automation: " + name + "\n\n[Service]\nType=oneshot\nExecStart=" + bin + " run " + name + " --yes --non-interactive\n"
+    let timer = "[Unit]\nDescription=psd-auto timer: " + name + "\n\n[Timer]\nOnCalendar=" + calendar + "\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
+    write_file(service_path, service)
+    write_file(timer_path, timer)
+    print("wrote " + service_path)
+    print("wrote " + timer_path)
+    let reload = try_run(["systemctl", "--user", "daemon-reload"], 15)
+    let enable = try_run(["systemctl", "--user", "enable", "--now", "psd-auto-" + name + ".timer"], 30)
+    if enable["ok"] == true {
+        print("timer enabled and started")
+        print("check: systemctl --user list-timers 'psd-auto-*'")
+        print("note: for headless runs without an active login session, enable lingering:")
+        print("      loginctl enable-linger $USER")
+    } else {
+        print("warning: systemctl --user enable failed (code " + str(util.jget_int(enable, "code", -1)) + ")")
+        print("the unit files were written; enable manually with:")
+        print("  systemctl --user daemon-reload && systemctl --user enable --now psd-auto-" + name + ".timer")
+    }
+}
+
+fn cmd_unschedule(flags: [str]) {
+    let pos = positionals(flags)
+    if len(pos) < 1 {
+        print("usage: psd-auto unschedule <name>")
+        exit(2)
+    }
+    let name = pos[0]
+    if spec.valid_name(name) == false {
+        print("error: invalid automation name")
+        exit(2)
+    }
+    let dir = systemd_user_dir()
+    let service_path = dir + "/psd-auto-" + name + ".service"
+    let timer_path = dir + "/psd-auto-" + name + ".timer"
+    try_run(["systemctl", "--user", "disable", "--now", "psd-auto-" + name + ".timer"], 30)
+    let removed = 0
+    if exists(service_path) {
+        delete(service_path)
+        removed = removed + 1
+    }
+    if exists(timer_path) {
+        delete(timer_path)
+        removed = removed + 1
+    }
+    try_run(["systemctl", "--user", "daemon-reload"], 15)
+    print("unscheduled '" + name + "' (" + str(removed) + " unit file(s) removed)")
+}
+
+fn cmd_timers(flags: [str]) {
+    let r = try_capture(["systemctl", "--user", "list-timers", "--all", "--no-pager", "psd-auto-*"], 15)
+    if r["ok"] == true {
+        let v = str(r["value"]).trim()
+        if len(v) == 0 {
+            print("no psd-auto timers scheduled")
+            return
+        }
+        print(v)
+        return
+    }
+    print("could not list timers (is systemd --user available?)")
+}
+
+fn ensure_dir(path: str) {
+    let parts = path.split("/")
+    let cur = ""
+    for p in parts {
+        if len(p) == 0 {
+            cur = cur + "/"
+            continue
+        }
+        if cur == "/" {
+            cur = "/" + p
+        } else {
+            cur = cur + "/" + p
+        }
+        if not exists(cur) {
+            mkdir_quiet(cur)
+        }
+    }
+    return
+}
+
+fn mkdir_quiet(path: str) {
+    let r = try_make_dir(path)
+    return
+}
+
+# ------------------------------------------------------------ init ----
+
+fn cmd_init(flags: [str]) {
+    util.ensure_dirs()
+    let cfg = util.config_file()
+    if not exists(cfg) {
+        write_file(cfg, "{\n  \"ai_model\": \"gpt-4o-mini\",\n  \"ai_base_url\": \"https://api.openai.com/v1\"\n}\n")
+        print("wrote default config " + cfg)
+    } else {
+        print("config already exists " + cfg)
+    }
+    print("directories:")
+    print("  user automations: " + util.user_automations_dir())
+    print("  state & logs:     " + util.state_dir())
+    print("  builtin specs:    " + util.builtin_dir())
+    print("")
+    print("next steps:")
+    print("  1. run an automation:     psd-auto list   ·   psd-auto doctor")
+    print("  2. enable AI features:    export PSD_AI_API_KEY=sk-...   (psd-auto help ai)")
+    print("  3. add the tool to PATH:  ~/.local/bin/psd-auto   (see install.sh)")
+    print("  4. open the dashboard:    psd-auto web    → http://127.0.0.1:8099/")
+}
+
+# ----------------------------------------------------------- help ----
+
+fn cmd_help(flags: [str]) {
+    let pos = positionals(flags)
+    if len(pos) >= 1 and pos[0] == "ai" {
+        print(ai.setup_help())
+        return
+    }
+    print("")
+    print("psd-auto " + version() + " — Fedora 45 workstation autopilot (written in PSD)")
+    print("")
+    print("USAGE")
+    print("  psd-auto list [--json]                        list all automations (built-in + yours)")
+    print("  psd-auto info <name>                          spec details + recent runs")
+    print("  psd-auto run <name> [--dry-run] [--param k=v] run an automation (dry-run previews)")
+    print("      [--yes] [--non-interactive] [--force] [--json]")
+    print("  psd-auto add                                  interactive wizard")
+    print("  psd-auto add --ai \"describe what you want\"    AI writes a validated spec")
+    print("  psd-auto add --file spec.json                 import a spec from disk")
+    print("  psd-auto remove <name> [--yes]                delete a user automation")
+    print("  psd-auto logs [name] [--tail N]               run history (all or one)")
+    print("  psd-auto status                               machine + automation summary")
+    print("  psd-auto doctor                               system health report (read-only)")
+    print("  psd-auto web [--port N] [--host IP]           local dashboard (default 127.0.0.1:8099)")
+    print("  psd-auto ask \"question\"                       ask the AI about this machine")
+    print("  psd-auto explain <name>                       AI diagnoses the last failure")
+    print("  psd-auto schedule <name> \"<on-calendar>\"      run on a systemd timer")
+    print("  psd-auto unschedule <name>                    remove the timer")
+    print("  psd-auto timers                               list psd-auto timers")
+    print("  psd-auto init                                 create config/state directories")
+    print("  psd-auto help [ai]                            this help · AI setup")
+    print("  psd-auto version")
+    print("")
+    print("ENVIRONMENT")
+    print("  PSD_AI_API_KEY / OPENAI_API_KEY   AI key (enables --ai, ask, explain, web AI)")
+    print("  PSD_AI_BASE_URL                   default https://api.openai.com/v1")
+    print("  PSD_AI_MODEL                      default gpt-4o-mini")
+    print("  PSD_AUTO_ROOT                     install root (set by the launcher)")
+    print("  PSD_AUTO_CONFIG / PSD_AUTO_STATE  override config/state dirs")
+    print("  PSD_AUTO_WEB_TOKEN                dashboard token (loopback: optional)")
+    print("")
+    print("SAFETY")
+    print("  Every automation is validated before saving (names, step shape, a")
+    print("  forbidden-pattern list: mkfs/wipefs/dd of=/dev/rm -rf//pipe-to-shell/poweroff).")
+    print("  argv steps need no shell and cannot inject. sudo steps are flagged and")
+    print("  prompt before running. Everything logs to ~/.local/state/psd-auto/logs/.")
+}
+
+# ----------------------------------------------------------- main ----
+
+fn main() -> int {
+    let a = args()
+    if len(a) == 0 {
+        cmd_help([])
+        return 2
+    }
+    let cmd = a[0]
+    let flags: [str] = []
+    for i in range(1, len(a)) {
+        flags.push(a[i])
+    }
+    if cmd == "list" {
+        cmd_list(flags)
+        return 0
+    }
+    if cmd == "info" {
+        cmd_info(flags)
+        return 0
+    }
+    if cmd == "run" {
+        cmd_run(flags)
+        return 0
+    }
+    if cmd == "add" {
+        cmd_add(flags)
+        return 0
+    }
+    if cmd == "remove" or cmd == "rm" {
+        cmd_remove(flags)
+        return 0
+    }
+    if cmd == "logs" {
+        cmd_logs(flags)
+        return 0
+    }
+    if cmd == "status" {
+        cmd_status(flags)
+        return 0
+    }
+    if cmd == "web" {
+        cmd_web(flags)
+        return 0
+    }
+    if cmd == "ask" {
+        cmd_ask(flags)
+        return 0
+    }
+    if cmd == "explain" {
+        cmd_explain(flags)
+        return 0
+    }
+    if cmd == "doctor" {
+        cmd_doctor(flags)
+        return 0
+    }
+    if cmd == "schedule" {
+        cmd_schedule(flags)
+        return 0
+    }
+    if cmd == "unschedule" {
+        cmd_unschedule(flags)
+        return 0
+    }
+    if cmd == "timers" {
+        cmd_timers(flags)
+        return 0
+    }
+    if cmd == "init" {
+        cmd_init(flags)
+        return 0
+    }
+    if cmd == "help" or cmd == "--help" or cmd == "-h" {
+        cmd_help(flags)
+        return 0
+    }
+    if cmd == "version" or cmd == "--version" {
+        print("psd-auto " + version() + " (written in the PSD language)")
+        return 0
+    }
+    print("error: unknown command '" + cmd + "'  (see psd-auto help)")
+    return 2
+}
